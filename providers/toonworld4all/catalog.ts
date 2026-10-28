@@ -3,7 +3,7 @@ export const catalog = [
   { title: "Anime", filter: "/category/anime/" },
   { title: "Animated Series", filter: "/category/animated-series/" },
   { title: "TV Series", filter: "/category/tv-series/" },
-  { title: "Cartoon Shows", filter: "/category/cartoon-shows/" },
+  { title: "Cartoon Shows", filter: "/category/cartoon-network/" },
 ];
 
 export const genres = [];
