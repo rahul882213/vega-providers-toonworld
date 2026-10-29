@@ -57,12 +57,12 @@ async function fetchPosts({
 
     // WordPress themes vary; support common article/card structures and filter
     // out navigation/category links by requiring both a title and an image.
-    $("article, .post, .type-post, .post-item, .blog-post, .entry").each((_i: number, element: any) => {
+    $(".herald-lay-a, .herald-lay-b, .herald-lay-c, .herald-lay-d, .herald-lay-e, .herald-lay-f, .herald-lay-g, .herald-lay-h, .herald-lay-i, .herald-lay-j, .herald-lay-k, .herald-lay-l, article").each((_i: number, element: any) => {
       const card = $(element);
       const anchor = card.find("h1 a, h2 a, h3 a, .entry-title a, .post-title a, a[rel='bookmark']").first();
       const href = anchor.attr("href") || card.find("a[href]").first().attr("href");
       const title = (anchor.text() || card.find("h1, h2, h3, .entry-title, .post-title").first().text()).replace(/\s+/g, " ").trim();
-      const image = card.find("img").first().attr("data-src") || card.find("img").first().attr("data-lazy-src") || card.find("img").first().attr("src") || card.find("img").first().attr("srcset")?.split(",")[0]?.trim().split(" ")[0];
+     const image = card.find("img.wp-post-image").first().attr("src") || card.find("img.wp-post-image").first().attr("data-src") || card.find("img").first().attr("src");
       if (!href || !title || !image) return;
       try {
         const postUrl = new URL(href, BASE_URL);
