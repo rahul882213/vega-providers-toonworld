@@ -41,15 +41,31 @@ export const getMeta = async function ({
     });
 
     if (episodes.length > 0) {
-      linkList.push({ title: "Episodes", directLinks: episodes.map((episode) => ({ title: episode.title, link: episode.link, type: "series" })) });
+      linkList.push({
+        title: "Episodes",
+        directLinks: episodes.map((episode) => ({
+          title: episode.title,
+          link: episode.link,
+          type: "series",
+        })),
+      });
     }
+
+    const isMovie =
+      !/season|episodes|series/i.test(title) &&
+      episodes.length > 0 &&
+      episodes.every((e) => e.link.includes("/movie/"));
 
     return {
       title,
       image: image ? new URL(image, url).href : "",
       synopsis,
       imdbId: "",
-      type: episodes.length > 0 || /season|episodes|series/i.test(title) ? "series" : "movie",
+      type: isMovie
+        ? "movie"
+        : episodes.length > 0 || /season|episodes|series/i.test(title)
+          ? "series"
+          : "movie",
       tags: [...new Set(tags)],
       linkList,
       webUrl: url,

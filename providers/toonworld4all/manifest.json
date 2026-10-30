@@ -1,0 +1,17 @@
+{
+  "id": "toonworld4all",
+  "name": "ToonWorld4All",
+  "version": "1.0.0",
+  "type": "mixed",
+  "icon": "https://www.toonworld4all.me/wp-content/uploads/2020/02/Toonworld4all-logo.png",
+  "description": "Multi-Audio Cartoons, Anime and Animated Movies provider for Vega.",
+  "author": "Vega Community",
+  "repository": "https://github.com/vega-org/providers-template",
+  "mainUrl": "https://toonworld4all.me",
+  "capabilities": {
+    "catalog": true,
+    "search": true,
+    "episodes": true,
+    "streams": true
+  }
+}
