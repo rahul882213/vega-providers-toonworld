@@ -437,5 +437,7 @@ test("stream.ts handles upstream errors gracefully without throwing unhandled ex
     isDownload: false,
   });
 
-  assert.deepEqual(streams, []);
+  assert.ok(Array.isArray(streams), "streams should be an array");
+  assert.ok(streams.length > 0, "streams should have fallback elements to avoid Vega app error");
+  assert.ok(streams.every((s) => Boolean(s.server && s.link && s.type)), "all streams should match StreamSchema");
 });
