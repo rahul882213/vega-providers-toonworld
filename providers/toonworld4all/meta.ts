@@ -4,6 +4,14 @@ import { throwProviderError } from "../providerErrors";
 const BASE_URL = "https://toonworld4all.me";
 const ARCHIVE_HOST = "archive.toonworld4all.me";
 
+interface ScrapedEpisode {
+  title: string;
+  link: string;
+  isMovie?: boolean;
+  seasonNumber: number;
+  episodeNumber: number;
+}
+
 export const getMeta = async function ({
   link,
   providerContext,
@@ -15,11 +23,18 @@ export const getMeta = async function ({
     const { axios, cheerio, commonHeaders } = providerContext;
     const url = new URL(link, BASE_URL).href;
     const response = await axios.get(url, {
-      headers: { ...commonHeaders, Referer: BASE_URL },
+      headers: {
+        ...commonHeaders,
+        Referer: BASE_URL,
+        "User-Agent":
+          commonHeaders["User-Agent"] ||
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      },
     });
     const $ = cheerio.load(response.data);
 
-    const title = (
+    // Extract raw title and clean it
+    const rawTitle = (
       $("h1.entry-title, h1.post-title, article h1, main h1, h1").first().text() ||
       $("meta[property='og:title']").attr("content") ||
       $("title").text()
@@ -27,13 +42,22 @@ export const getMeta = async function ({
       .replace(/\s+/g, " ")
       .trim();
 
+    // Clean title for nice display (e.g. "Naruto: Shippuden Season 18")
+    const cleanTitle =
+      rawTitle
+        .replace(/^download\s+/i, "")
+        .split(/\s+(?:\[|\d+p\b|bluray\b|multi\s+audio\b|web-dl\b|ddp\d|dd2)/i)[0]
+        .replace(/\|.*$/, "")
+        .trim() || rawTitle;
+
     const image =
       $("meta[property='og:image']").attr("content") ||
       $(".post-thumbnail img, .entry-content img, article img").first().attr("data-src") ||
       $(".post-thumbnail img, .entry-content img, article img").first().attr("src") ||
       "";
 
-    const synopsis =
+    // Extract and clean synopsis
+    let synopsis =
       $("meta[name='description']").attr("content") ||
       $("meta[property='og:description']").attr("content") ||
       $(".entry-content p, article p")
@@ -44,6 +68,10 @@ export const getMeta = async function ({
         .trim() ||
       "";
 
+    if (synopsis.includes("Synopsis:")) {
+      synopsis = synopsis.split(/synopsis\s*:\s*/i).pop()?.trim() || synopsis;
+    }
+
     const tags: string[] = $(
       ".post-categories a, .cat-links a, .tags-links a, .entry-meta a[rel='tag']",
     )
@@ -51,7 +79,13 @@ export const getMeta = async function ({
       .get()
       .filter((tag: string) => Boolean(tag));
 
-    const episodes: { title: string; link: string; isMovie?: boolean }[] = [];
+    // Detect overall series season from post title if available (e.g. "Season 18")
+    const titleSeasonMatch = rawTitle.match(/season\s*(\d+)/i);
+    const globalSeason = titleSeasonMatch
+      ? parseInt(titleSeasonMatch[1], 10)
+      : 1;
+
+    const episodes: ScrapedEpisode[] = [];
     const seen = new Set<string>();
 
     $("a[href]").each((_i: number, element: any) => {
@@ -78,12 +112,52 @@ export const getMeta = async function ({
         if ((isArchive && isMediaRoute) || isCloudHost) {
           if (!seen.has(parsedUrl.href)) {
             seen.add(parsedUrl.href);
-            const anchorText = anchor.text().replace(/\s+/g, " ").trim();
+
             const isMovieLink = pathname.startsWith("/movie/");
+            const anchorText = anchor.text().replace(/\s+/g, " ").trim();
+            const parentText = anchor.parent().text().replace(/\s+/g, " ").trim();
+
+            // Extract episode number
+            let epNum = 0;
+            let seasonNum = globalSeason;
+
+            // Pattern 1: URL format like 1x373 or 2x5
+            const urlPairMatch = pathname.match(/(\d+)x(\d+)/i);
+            if (urlPairMatch) {
+              const uSeason = parseInt(urlPairMatch[1], 10);
+              const uEpisode = parseInt(urlPairMatch[2], 10);
+              epNum = uEpisode;
+              // If title did not explicitly specify a season, adopt the URL season
+              if (!titleSeasonMatch && uSeason > 0) {
+                seasonNum = uSeason;
+              }
+            }
+
+            // Pattern 2: URL format like episode-373 or ep-5
+            if (!epNum) {
+              const urlEpMatch = pathname.match(/ep(?:isode)?[-_.]?(\d+)/i);
+              if (urlEpMatch) {
+                epNum = parseInt(urlEpMatch[1], 10);
+              }
+            }
+
+            // Pattern 3: Parent text "Episode 373:" or anchor text
+            if (!epNum) {
+              const textMatch =
+                parentText.match(/ep(?:isode)?\.?\s*(\d+)/i) ||
+                anchorText.match(/ep(?:isode)?\.?\s*(\d+)/i);
+              if (textMatch) {
+                epNum = parseInt(textMatch[1], 10);
+              }
+            }
+
+            // Fallback: sequential numbering later if epNum is still 0
             episodes.push({
               title: anchorText,
               link: parsedUrl.href,
               isMovie: isMovieLink,
+              seasonNumber: seasonNum,
+              episodeNumber: epNum,
             });
           }
         }
@@ -94,9 +168,9 @@ export const getMeta = async function ({
 
     // Detect whether post is a movie or TV series
     const isMovie =
-      /movie/i.test(title) ||
+      /movie/i.test(rawTitle) ||
       episodes.some((e) => e.isMovie) ||
-      (!/season|episodes|series/i.test(title) &&
+      (!/season|episodes|series/i.test(rawTitle) &&
         !episodes.some((e) => e.link.includes("/episode/")));
 
     const linkList: Link[] = [];
@@ -112,7 +186,7 @@ export const getMeta = async function ({
                 ? `Server ${idx + 1}`
                 : item.title && !/watch|download|get/i.test(item.title)
                   ? item.title
-                  : "Movie",
+                  : "Full Movie",
             link: item.link,
             type: "movie",
           })),
@@ -120,53 +194,45 @@ export const getMeta = async function ({
       }
     } else {
       if (episodes.length > 0) {
-        // Group episodes by Season if season pattern is found
-        const seasonGroups = new Map<
-          string,
-          { title: string; link: string }[]
-        >();
+        // Group episodes by Season
+        const seasonGroups = new Map<number, ScrapedEpisode[]>();
 
-        episodes.forEach((ep) => {
-          const seasonMatch =
-            ep.link.match(/\/episode\/[^\/]+-(\d+)x(\d+)/i) ||
-            ep.link.match(/s(?:eason)?[-_.]?(\d+)/i) ||
-            title.match(/season\s*(\d+)/i);
-          const seasonName = seasonMatch
-            ? `Season ${parseInt(seasonMatch[1], 10)}`
-            : "Season 1";
-
-          if (!seasonGroups.has(seasonName)) {
-            seasonGroups.set(seasonName, []);
+        episodes.forEach((ep, idx) => {
+          const sNum = ep.seasonNumber || globalSeason || 1;
+          if (!seasonGroups.has(sNum)) {
+            seasonGroups.set(sNum, []);
           }
-          seasonGroups.get(seasonName)!.push(ep);
+          // If episodeNumber was not detected, assign sequential index + 1
+          if (!ep.episodeNumber) {
+            ep.episodeNumber = idx + 1;
+          }
+          seasonGroups.get(sNum)!.push(ep);
         });
 
-        for (const [seasonName, epList] of seasonGroups.entries()) {
-          linkList.push({
-            title: seasonName,
-            directLinks: epList.map((ep, idx) => {
-              const numMatch =
-                ep.link.match(/(\d+)x(\d+)/) ||
-                ep.title.match(/ep(?:isode)?\.?\s*(\d+)/i) ||
-                ep.link.match(/ep(?:isode)?[-_.]?(\d+)/i);
-              const epNum = numMatch
-                ? parseInt(numMatch[2] || numMatch[1], 10)
-                : idx + 1;
-              const cleanTitle = `Episode ${epNum}`;
+        // Sort seasons ascending
+        const sortedSeasons = [...seasonGroups.keys()].sort((a, b) => a - b);
 
-              return {
-                title: cleanTitle,
-                link: ep.link,
-                type: "series",
-              };
-            }),
+        for (const sNum of sortedSeasons) {
+          const epList = seasonGroups.get(sNum)!;
+          // Sort episodes ascending by episodeNumber
+          epList.sort((a, b) => a.episodeNumber - b.episodeNumber);
+
+          const seasonTitle = `Season ${sNum}`;
+
+          linkList.push({
+            title: seasonTitle,
+            directLinks: epList.map((ep) => ({
+              title: `Episode ${ep.episodeNumber}`,
+              link: ep.link,
+              type: "series",
+            })),
           });
         }
       }
     }
 
     return {
-      title,
+      title: cleanTitle,
       image: image ? new URL(image, url).href : "",
       synopsis,
       imdbId: "",

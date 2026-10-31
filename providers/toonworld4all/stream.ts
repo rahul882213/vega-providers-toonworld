@@ -36,18 +36,27 @@ function sortStreams(streams: Stream[], isDownload?: boolean): Stream[] {
       if (server.includes("pixeldrain")) return 3;
       if (server.includes("gofile")) return 4;
       if (server.includes("fastdl")) return 5;
-      if (type === "mkv" || type === "mp4") return 6;
-      if (type === "embed") return 8;
-      return 10;
+      if (server.includes("hubcdn")) return 6;
+      if (type === "mkv" || type === "mp4") return 7;
+      if (server.includes("toonworld player")) return 8;
+      if (server.includes("web mirror") || type === "embed") return 50;
+      return 20;
     } else {
-      if (server.includes("toonworld player")) return 1;
+      // If direct web player from data.streams is present
+      if (server === "toonworld player") return 1;
+      // Direct high-performance video streams for ExoPlayer
       if (type === "m3u8") return 2;
-      if (server.includes("cf storage")) return 3;
-      if (type === "mp4" || type === "mkv") return 4;
-      if (server.includes("gofile")) return 5;
-      if (server.includes("pixeldrain")) return 6;
-      if (server.includes("toonworld") || type === "embed") return 7;
-      return 10;
+      if (server.includes("cf storage") || server.includes("storage")) return 3;
+      if (server.includes("cf worker") || server.includes("fast cloud")) return 4;
+      if (server.includes("pixeldrain")) return 5;
+      if (server.includes("gofile")) return 6;
+      if (server.includes("fastdl") || server.includes("fsl")) return 7;
+      if (server.includes("hubcdn")) return 8;
+      if (type === "mp4" || type === "mkv") return 9;
+      if (server.includes("gdrive") || server.includes("google")) return 15;
+      // Webpage mirrors / embeds rank at the very bottom so ExoPlayer never plays an HTML page
+      if (server.includes("web mirror") || type === "embed") return 99;
+      return 20;
     }
   };
 
@@ -181,23 +190,37 @@ export async function getStream({
               "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
           },
           signal: abortSignal,
-          timeout: 6000,
+          timeout: 12000,
         });
 
         const redMatch = redRes.data.match(
           /window\.__PROPS__\s*=\s*({[\s\S]*?});/,
         );
-        if (!redMatch) return;
-        const redProps = safeParseProps(redMatch[1]);
-        if (!redProps) return;
-        const domain = redProps.link?.domain;
-        const hidden = redProps.link?.hidden;
-        if (!domain || !hidden) return;
+        let hostLink = "";
+        let domain = "";
+        if (redMatch) {
+          const redProps = safeParseProps(redMatch[1]);
+          domain = redProps?.link?.domain || "";
+          const hidden = redProps?.link?.hidden || "";
+          if (domain && hidden) {
+            hostLink = domain + hidden;
+          }
+        }
 
-        const hostLink = domain + hidden;
+        // Fallback: search HTML for destination URL if props was absent
+        if (!hostLink) {
+          const urlMatch = redRes.data.match(/(https?:\/\/[^\s"'<>]*(?:hubcloud|vcloud|gdflix|pixeldrain|gofile)[^\s"'<>]*)/i);
+          if (urlMatch) {
+            hostLink = urlMatch[1];
+            domain = hostLink.split("/").slice(0, 3).join("/");
+          }
+        }
+
+        if (!hostLink) return;
+
         let extractedCount = 0;
 
-        if (/hubcloud|vcloud/i.test(domain)) {
+        if (/hubcloud|vcloud/i.test(domain) || /hubcloud|vcloud/i.test(hostLink)) {
           try {
             const hcStreams = await hubcloudExtractor(
               hostLink,
@@ -222,7 +245,7 @@ export async function getStream({
           } catch {
             // Upstream host may be expired or inaccessible
           }
-        } else if (/gdflix/i.test(domain)) {
+        } else if (/gdflix/i.test(domain) || /gdflix/i.test(hostLink)) {
           try {
             const gdStreams = await gdflixExtractor(
               hostLink,
@@ -245,12 +268,39 @@ export async function getStream({
           } catch {
             // GDFlix error or WAF
           }
+        } else if (/pixeld/i.test(domain) || /pixeld/i.test(hostLink)) {
+          const token = hostLink.split("/").pop()?.split("?")[0];
+          const bUrl = hostLink.split("/").slice(0, -2).join("/") || "https://pixeldrain.com";
+          const directPixel = `${bUrl}/api/file/${token}?download`;
+          addStream({
+            server: "Pixeldrain",
+            link: directPixel,
+            type: "mkv",
+            quality: quality || "720",
+            tag: tag,
+          });
+          extractedCount++;
+        } else if (/\.(mkv|mp4|m3u8)(\?|$)/i.test(hostLink)) {
+          const extMatch = hostLink.match(/\.(mkv|mp4|m3u8)(\?|$)/i);
+          const extType = extMatch ? extMatch[1].toLowerCase() : "mkv";
+          addStream({
+            server: hostName ? `ToonWorld (${hostName})` : "Direct Stream",
+            link: hostLink,
+            type: extType,
+            quality: quality || "720",
+            tag: tag,
+            headers: {
+              Referer: targetUrl,
+              "User-Agent": commonHeaders["User-Agent"] || "Mozilla/5.0",
+            },
+          });
+          extractedCount++;
         }
 
-        // If direct extractor did not return streams, add host link as embed server
-        if (extractedCount === 0 && hostLink.startsWith("http")) {
+        // If direct extractor did not return streams, add host link as low-priority embed server (exclude unplayable lockers like mega.nz)
+        if (extractedCount === 0 && hostLink.startsWith("http") && !hostLink.includes("mega.nz") && !hostLink.includes("filepress")) {
           addStream({
-            server: `ToonWorld (${quality || "HD"} - ${hostName || "Cloud"})`,
+            server: `ToonWorld Web Mirror (${quality || "HD"} - ${hostName || "Cloud"})`,
             link: hostLink,
             type: "embed",
             quality: quality || "720",
@@ -271,7 +321,7 @@ export async function getStream({
       await resolveAndExtractFile(targetUrl, undefined, undefined, "Server");
       if (streamLinks.length === 0) {
         addStream({
-          server: "ToonWorld Player",
+          server: "ToonWorld Web Mirror",
           link: targetUrl,
           type: "embed",
           quality: "720",
@@ -300,7 +350,6 @@ export async function getStream({
       });
       epHtml = epRes.data || "";
     } catch (fetchErr) {
-      // If fetching archive page failed, log and fallback
       console.warn("Failed to fetch archive page:", fetchErr);
     }
 
@@ -345,7 +394,20 @@ export async function getStream({
               const cleanQuality = normalizeQuality(enc.resolution);
               const codec = enc.readable?.codec;
               if (Array.isArray(enc.files)) {
-                for (const file of enc.files) {
+                // Prioritize HubCloud and GDFlix which return direct .mkv streams
+                const sortedFiles = [...enc.files].sort((a, b) => {
+                  const aText = ((a.host || "") + (a.short || "")).toLowerCase();
+                  const bText = ((b.host || "") + (b.short || "")).toLowerCase();
+                  const aScore = /hubcloud|vcloud|gdflix|pixel/i.test(aText) ? 0 : 1;
+                  const bScore = /hubcloud|vcloud|gdflix|pixel/i.test(bText) ? 0 : 1;
+                  return aScore - bScore;
+                });
+
+                for (const file of sortedFiles) {
+                  const hName = (file.host || file.short || "").toLowerCase();
+                  // Skip lockers that do not support direct streaming in ExoPlayer
+                  if (hName.includes("mega") || hName.includes("filepress")) continue;
+
                   if (file.link) {
                     const redirectUrl = new URL(
                       file.link,
@@ -366,11 +428,12 @@ export async function getStream({
             }
 
             if (tasks.length > 0) {
-              // Wait for tasks with a reasonable timeout so we never block Vega app test
-              await Promise.race([
-                Promise.allSettled(tasks),
-                new Promise((res) => setTimeout(res, 8000)),
-              ]);
+              let timer: any;
+              const timeoutPromise = new Promise((res) => {
+                timer = setTimeout(res, 15000);
+              });
+              await Promise.race([Promise.allSettled(tasks), timeoutPromise]);
+              if (timer) clearTimeout(timer);
             }
           }
         } catch {
@@ -379,10 +442,10 @@ export async function getStream({
       }
     }
 
-    // Fallback: if no direct streams or extractors succeeded, guarantee archive embed player URL
+    // Fallback: if no direct streams or extractors succeeded, guarantee fallback URL
     if (streamLinks.length === 0 && targetUrl) {
       addStream({
-        server: "ToonWorld Player",
+        server: "ToonWorld Web Mirror",
         link: targetUrl,
         type: "embed",
         quality: "720",
@@ -401,7 +464,7 @@ export async function getStream({
     // Return fallback stream so the Vega App never fails the stream stage
     return [
       {
-        server: "ToonWorld Player",
+        server: "ToonWorld Web Mirror",
         link: targetUrl || link,
         type: "embed",
         quality: "720",

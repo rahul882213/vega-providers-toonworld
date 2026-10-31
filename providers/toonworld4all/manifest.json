@@ -3,7 +3,7 @@
   "name": "ToonWorld4All",
   "version": "1.0.0",
   "type": "mixed",
-  "icon": "https://www.toonworld4all.me/wp-content/uploads/2020/02/Toonworld4all-logo.png",
+  "icon": "https://cdn.jsdelivr.net/gh/rahul882213/vega-providers-toonworld@main/assets/toonworld4all.png",
   "description": "Multi-Audio Cartoons, Anime and Animated Movies provider for Vega.",
   "author": "Vega Community",
   "repository": "https://github.com/vega-org/providers-template",
