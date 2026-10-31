@@ -336,21 +336,60 @@ export async function getStream({
 
     // Case 2: link is an episode or movie page on archive.toonworld4all.me
     let epHtml = "";
+    const epHeaders: Record<string, string> = {
+      ...commonHeaders,
+      Referer: BASE_URL,
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+    };
+
+    try {
+      const savedCookie = await providerContext?.kvStore?.get<string>("cf_clearance_archive");
+      if (savedCookie) {
+        epHeaders["Cookie"] = savedCookie;
+      }
+    } catch {}
+
     try {
       const epRes = await axios.get(targetUrl, {
-        headers: {
-          ...commonHeaders,
-          Referer: BASE_URL,
-          Accept:
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9",
-        },
+        headers: epHeaders,
         signal: abortSignal,
         timeout: 10000,
       });
       epHtml = epRes.data || "";
-    } catch (fetchErr) {
-      console.warn("Failed to fetch archive page:", fetchErr);
+    } catch (fetchErr: any) {
+      const status = fetchErr.response?.status;
+      if ((status === 403 || status === 503) && providerContext?.openWebView) {
+        try {
+          const wafRes = await providerContext.openWebView(targetUrl, {
+            title: "Verifying connection to ToonWorld",
+            description: "Please complete the verification to load video streams.",
+            headers: epHeaders,
+            waitForCookie: "cf_clearance",
+            force: true,
+          });
+          if (wafRes.data) {
+            epHtml = wafRes.data;
+          }
+          if (wafRes.cookies) {
+            epHeaders["Cookie"] = (epHeaders["Cookie"] ? epHeaders["Cookie"] + "; " : "") + wafRes.cookies;
+            await providerContext?.kvStore?.set("cf_clearance_archive", epHeaders["Cookie"]);
+            if (!epHtml) {
+              const retryRes = await axios.get(targetUrl, {
+                headers: epHeaders,
+                signal: abortSignal,
+                timeout: 10000,
+              });
+              epHtml = retryRes.data || "";
+            }
+          }
+        } catch (wafErr) {
+          console.warn("openWebView WAF challenge failed:", wafErr);
+        }
+      } else {
+        console.warn("Failed to fetch archive page:", fetchErr.message);
+      }
     }
 
     if (epHtml) {
@@ -439,6 +478,102 @@ export async function getStream({
         } catch {
           // Ignore JSON parse errors
         }
+      }
+
+      // 3. Cheerio DOM fallback extraction for direct video sources, iframes, and redirect links
+      if (streamLinks.length === 0) {
+        try {
+          const $ep = cheerio.load(epHtml);
+
+          // Check video/source elements
+          $ep("video, source").each((_i: number, el: any) => {
+            const src = $ep(el).attr("src");
+            if (src && typeof src === "string" && src.startsWith("http")) {
+              const extType = src.includes(".m3u8")
+                ? "m3u8"
+                : src.includes(".mp4")
+                  ? "mp4"
+                  : src.includes(".mkv")
+                    ? "mkv"
+                    : "mp4";
+              addStream({
+                server: "Direct Player",
+                link: src,
+                type: extType,
+                quality: "720",
+                headers: { Referer: targetUrl },
+              });
+            }
+          });
+
+          // Check iframe players
+          $ep("iframe[src]").each((_i: number, el: any) => {
+            const iSrc = $ep(el).attr("src");
+            if (iSrc && (iSrc.includes(".m3u8") || iSrc.includes(".mp4"))) {
+              addStream({
+                server: "Web Player",
+                link: iSrc,
+                type: iSrc.includes(".m3u8") ? "m3u8" : "mp4",
+                quality: "720",
+                headers: { Referer: targetUrl },
+              });
+            }
+          });
+
+          // Check DOM anchor tags for cloud hosting and redirect links
+          const domTasks: Promise<any>[] = [];
+          $ep("a[href]").each((_i: number, el: any) => {
+            const h = $ep(el).attr("href");
+            if (!h) return;
+            try {
+              const p = new URL(h, targetUrl).href;
+              if (p.includes("/redirect/")) {
+                domTasks.push(resolveAndExtractFile(p, undefined, undefined, "Server"));
+              } else if (/hubcloud|vcloud/i.test(p)) {
+                domTasks.push(
+                  hubcloudExtractor(
+                    p,
+                    abortSignal,
+                    axios,
+                    cheerio,
+                    epHeaders,
+                    providerContext,
+                    isDownload,
+                    "toonworld4all",
+                  ).then((res) => {
+                    if (Array.isArray(res)) {
+                      for (const s of res) addStream(s);
+                    }
+                  }).catch(() => {}),
+                );
+              } else if (/gdflix/i.test(p)) {
+                domTasks.push(
+                  gdflixExtractor(
+                    p,
+                    abortSignal,
+                    axios,
+                    cheerio,
+                    epHeaders,
+                    providerContext,
+                  ).then((res) => {
+                    if (Array.isArray(res)) {
+                      for (const s of res) addStream(s);
+                    }
+                  }).catch(() => {}),
+                );
+              }
+            } catch {}
+          });
+
+          if (domTasks.length > 0) {
+            let timer: any;
+            const timeoutPromise = new Promise((res) => {
+              timer = setTimeout(res, 12000);
+            });
+            await Promise.race([Promise.allSettled(domTasks), timeoutPromise]);
+            if (timer) clearTimeout(timer);
+          }
+        } catch {}
       }
     }
 

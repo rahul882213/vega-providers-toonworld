@@ -441,3 +441,55 @@ test("stream.ts handles upstream errors gracefully without throwing unhandled ex
   assert.ok(streams.length > 0, "streams should have fallback elements to avoid Vega app error");
   assert.ok(streams.every((s) => Boolean(s.server && s.link && s.type)), "all streams should match StreamSchema");
 });
+
+test("stream.ts handles Cloudflare 503 WAF using openWebView and returns direct video streams", async () => {
+  let openWebViewCalled = false;
+  const directEpisodeHtml = `
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <video src="https://stream.example.com/direct/naruto-ep1.mp4"></video>
+      </body>
+    </html>
+  `;
+  const ctx = {
+    cheerio,
+    commonHeaders: { "User-Agent": "MockAgent/1.0" },
+    axios: {
+      get: async () => {
+        const err = new Error("Request failed with status code 503");
+        err.response = { status: 503 };
+        throw err;
+      },
+    },
+    openWebView: async (url) => {
+      openWebViewCalled = true;
+      return {
+        data: directEpisodeHtml,
+        cookies: "cf_clearance=test_token_123",
+        cookieMap: { cf_clearance: "test_token_123" },
+        userAgent: "MockAgent/1.0",
+        url,
+      };
+    },
+    kvStore: {
+      get: async () => null,
+      set: async () => {},
+    },
+  };
+
+  const streamMod = loadModule("stream");
+  const streams = await streamMod.getStream({
+    link: "https://archive.toonworld4all.me/episode/waf-ep",
+    type: "series",
+    providerContext: ctx,
+    isDownload: false,
+  });
+
+  assert.ok(openWebViewCalled, "openWebView should be called on Cloudflare 503");
+  assert.ok(streams.length > 0);
+  assert.equal(streams[0].server, "Direct Player");
+  assert.equal(streams[0].type, "mp4");
+  assert.equal(streams[0].link, "https://stream.example.com/direct/naruto-ep1.mp4");
+});
+
