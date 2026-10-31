@@ -123,7 +123,7 @@ export async function getStream({
         addStream({
           server: "HubCloud Mirror",
           link: link,
-          type: "embed",
+          type: "iframe",
           quality: "720",
           headers: {
             Referer: BASE_URL,
@@ -160,7 +160,7 @@ export async function getStream({
         addStream({
           server: "GDFlix Mirror",
           link: link,
-          type: "embed",
+          type: "iframe",
           quality: "720",
           headers: {
             Referer: BASE_URL,
@@ -316,12 +316,12 @@ export async function getStream({
           extractedCount++;
         }
 
-        // If direct extractor did not return streams, add host link as low-priority embed server (exclude unplayable lockers like mega.nz)
+        // If direct extractor did not return streams, add host link as low-priority iframe server (exclude unplayable lockers like mega.nz)
         if (extractedCount === 0 && hostLink.startsWith("http") && !hostLink.includes("mega.nz") && !hostLink.includes("filepress")) {
           addStream({
             server: `ToonWorld Web Mirror (${quality || "HD"} - ${hostName || "Cloud"})`,
             link: hostLink,
-            type: "embed",
+            type: "iframe",
             quality: quality || "720",
             tag: tag,
             headers: {
@@ -340,9 +340,9 @@ export async function getStream({
       await resolveAndExtractFile(targetUrl, undefined, undefined, "Server");
       if (streamLinks.length === 0) {
         addStream({
-          server: "ToonWorld Web Mirror",
+          server: "ToonWorld Web Player",
           link: targetUrl,
-          type: "embed",
+          type: "iframe",
           quality: "720",
           headers: {
             Referer: BASE_URL,
@@ -449,7 +449,7 @@ export async function getStream({
                     ? "mp4"
                     : playUrl.includes(".mkv")
                       ? "mkv"
-                      : "embed";
+                      : "iframe";
 
                 addStream({
                   server: "ToonWorld Player",
@@ -615,9 +615,9 @@ export async function getStream({
     // Fallback: if no direct streams or extractors succeeded, guarantee fallback URL
     if (streamLinks.length === 0 && targetUrl) {
       addStream({
-        server: "ToonWorld Web Mirror",
+        server: "ToonWorld Web Player",
         link: targetUrl,
-        type: "embed",
+        type: "iframe",
         quality: "720",
         headers: {
           Referer: BASE_URL,
@@ -634,9 +634,9 @@ export async function getStream({
     // Return fallback stream so the Vega App never fails the stream stage
     return [
       {
-        server: "ToonWorld Web Mirror",
+        server: "ToonWorld Web Player",
         link: targetUrl || link,
-        type: "embed",
+        type: "iframe",
         quality: "720",
         headers: {
           Referer: BASE_URL,

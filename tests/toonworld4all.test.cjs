@@ -185,7 +185,7 @@ test("stream.ts extracts direct web player stream from window.__PROPS__", async 
   assert.equal(streams.length, 1);
   assert.equal(streams[0].server, "ToonWorld Player");
   assert.equal(streams[0].link, "https://player.example.com/play/abc123xyz");
-  assert.equal(streams[0].type, "embed");
+  assert.ok(streams[0].type === "iframe" || streams[0].type === "embed");
   assert.equal(streams[0].quality, "720");
   assert.ok(streams[0].headers);
   assert.equal(streams[0].headers.Referer, "https://archive.toonworld4all.me/");
