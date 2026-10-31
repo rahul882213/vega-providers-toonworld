@@ -117,16 +117,30 @@ export const getMeta = async function ({
             const anchorText = anchor.text().replace(/\s+/g, " ").trim();
             const parentText = anchor.parent().text().replace(/\s+/g, " ").trim();
 
-            // Extract episode number
+            // Extract episode number and title
             let epNum = 0;
             let seasonNum = globalSeason;
+            let fullTitle = "";
+
+            // Check accordion heading if available
+            const accordionItem = anchor.closest(".mks_accordion_item");
+            if (accordionItem.length > 0) {
+              const hText = accordionItem.find(".mks_accordion_heading").text().replace(/\s+/g, " ").trim();
+              if (hText) {
+                fullTitle = hText.replace(/\s*\{[^}]*\}\s*/g, " ").trim();
+                const hEpMatch = hText.match(/(?:Episode|Ep\.?)\s*(\d+)/i);
+                if (hEpMatch) {
+                  epNum = parseInt(hEpMatch[1], 10);
+                }
+              }
+            }
 
             // Pattern 1: URL format like 1x373 or 2x5
             const urlPairMatch = pathname.match(/(\d+)x(\d+)/i);
             if (urlPairMatch) {
               const uSeason = parseInt(urlPairMatch[1], 10);
               const uEpisode = parseInt(urlPairMatch[2], 10);
-              epNum = uEpisode;
+              if (!epNum) epNum = uEpisode;
               // If title did not explicitly specify a season, adopt the URL season
               if (!titleSeasonMatch && uSeason > 0) {
                 seasonNum = uSeason;
@@ -151,9 +165,8 @@ export const getMeta = async function ({
               }
             }
 
-            // Fallback: sequential numbering later if epNum is still 0
             episodes.push({
-              title: anchorText,
+              title: fullTitle || anchorText,
               link: parsedUrl.href,
               isMovie: isMovieLink,
               seasonNumber: seasonNum,
@@ -222,7 +235,10 @@ export const getMeta = async function ({
           linkList.push({
             title: seasonTitle,
             directLinks: epList.map((ep) => ({
-              title: `Episode ${ep.episodeNumber}`,
+              title:
+                ep.title && !/^(?:watch\/?download|download|get links?)$/i.test(ep.title.trim())
+                  ? ep.title
+                  : `Episode ${ep.episodeNumber}`,
               link: ep.link,
               type: "series",
             })),

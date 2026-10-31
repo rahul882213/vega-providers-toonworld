@@ -333,8 +333,8 @@
   {
     "display_name": "ToonWorld4All",
     "value": "toonworld4all",
-    "version": "1.1",
-    "icon": "https://cdn.jsdelivr.net/gh/rahul882213/vega-providers-toonworld@main/assets/toonworld4all.png",
+    "version": "1.2",
+    "icon": "https://raw.githubusercontent.com/rahul882213/vega-providers-toonworld/main/assets/toonworld4all.png",
     "type": "english",
     "disabled": false
   },

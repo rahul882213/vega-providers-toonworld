@@ -30,6 +30,8 @@ function sortStreams(streams: Stream[], isDownload?: boolean): Stream[] {
   const getScore = (s: Stream) => {
     const server = (s.server || "").toLowerCase();
     const type = (s.type || "").toLowerCase();
+    const isDirectVideo = type === "mkv" || type === "mp4" || type === "m3u8";
+
     if (isDownload) {
       if (server.includes("cf storage") || server.includes("storage")) return 1;
       if (server.includes("gdrive") || server.includes("google")) return 2;
@@ -37,14 +39,10 @@ function sortStreams(streams: Stream[], isDownload?: boolean): Stream[] {
       if (server.includes("gofile")) return 4;
       if (server.includes("fastdl")) return 5;
       if (server.includes("hubcdn")) return 6;
-      if (type === "mkv" || type === "mp4") return 7;
-      if (server.includes("toonworld player")) return 8;
-      if (server.includes("web mirror") || type === "embed") return 50;
+      if (!isDirectVideo) return 100;
       return 20;
     } else {
-      // If direct web player from data.streams is present
       if (server === "toonworld player") return 1;
-      // Direct high-performance video streams for ExoPlayer
       if (type === "m3u8") return 2;
       if (server.includes("cf storage") || server.includes("storage")) return 3;
       if (server.includes("cf worker") || server.includes("fast cloud")) return 4;
@@ -52,11 +50,9 @@ function sortStreams(streams: Stream[], isDownload?: boolean): Stream[] {
       if (server.includes("gofile")) return 6;
       if (server.includes("fastdl") || server.includes("fsl")) return 7;
       if (server.includes("hubcdn")) return 8;
-      if (type === "mp4" || type === "mkv") return 9;
-      if (server.includes("gdrive") || server.includes("google")) return 15;
-      // Webpage mirrors / embeds rank at the very bottom so ExoPlayer never plays an HTML page
-      if (server.includes("web mirror") || type === "embed") return 99;
-      return 20;
+      if (server.includes("gdrive") || server.includes("google")) return 9;
+      if (!isDirectVideo) return 100;
+      return 15;
     }
   };
 
@@ -232,7 +228,7 @@ export async function getStream({
               isDownload,
               "toonworld4all",
             );
-            if (Array.isArray(hcStreams)) {
+            if (Array.isArray(hcStreams) && hcStreams.length > 0) {
               for (const s of hcStreams) {
                 addStream({
                   ...s,
@@ -240,6 +236,29 @@ export async function getStream({
                   tag: s.tag || tag,
                 });
                 extractedCount++;
+              }
+            } else if (hostLink.includes("/drive/")) {
+              // Try /video/ path which newer HubCloud mirrors use
+              const videoPath = hostLink.replace("/drive/", "/video/");
+              const hcStreams2 = await hubcloudExtractor(
+                videoPath,
+                abortSignal,
+                axios,
+                cheerio,
+                commonHeaders,
+                providerContext,
+                isDownload,
+                "toonworld4all",
+              );
+              if (Array.isArray(hcStreams2)) {
+                for (const s of hcStreams2) {
+                  addStream({
+                    ...s,
+                    quality: s.quality || quality,
+                    tag: s.tag || tag,
+                  });
+                  extractedCount++;
+                }
               }
             }
           } catch {
@@ -360,7 +379,27 @@ export async function getStream({
       epHtml = epRes.data || "";
     } catch (fetchErr: any) {
       const status = fetchErr.response?.status;
-      if ((status === 403 || status === 503) && providerContext?.openWebView) {
+      // If 503 (LiteSpeed/Cloudflare server temporary rate limit), retry with delay first
+      if (status === 503) {
+        try {
+          await new Promise((res) => setTimeout(res, 800));
+          const retryRes = await axios.get(targetUrl, {
+            headers: {
+              ...commonHeaders,
+              Referer: BASE_URL,
+              "User-Agent":
+                commonHeaders["User-Agent"] ||
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            },
+            signal: abortSignal,
+            timeout: 10000,
+          });
+          epHtml = retryRes.data || "";
+        } catch {}
+      }
+
+      // If still no epHtml and status is 403 or persistent 503, try openWebView if available
+      if (!epHtml && (status === 403 || status === 503) && providerContext?.openWebView) {
         try {
           const wafRes = await providerContext.openWebView(targetUrl, {
             title: "Verifying connection to ToonWorld",
@@ -387,7 +426,7 @@ export async function getStream({
         } catch (wafErr) {
           console.warn("openWebView WAF challenge failed:", wafErr);
         }
-      } else {
+      } else if (!epHtml) {
         console.warn("Failed to fetch archive page:", fetchErr.message);
       }
     }
@@ -426,53 +465,49 @@ export async function getStream({
             }
           }
 
-          // 2. Extract resolution encodes and resolve host links in parallel
+          // 2. Extract resolution encodes and resolve candidate host links cleanly (without flooding)
           if (Array.isArray(data?.encodes)) {
-            const tasks: Promise<any>[] = [];
-            for (const enc of data.encodes) {
+            // Sort encodes: prefer 720p or 1080p
+            const sortedEncodes = [...data.encodes].sort((a, b) => {
+              const qA = parseInt(normalizeQuality(a.resolution) || "0", 10);
+              const qB = parseInt(normalizeQuality(b.resolution) || "0", 10);
+              return qB - qA;
+            });
+
+            // Focus on top resolutions to prevent LiteSpeed anti-abuse 503 limits
+            for (const enc of sortedEncodes.slice(0, 3)) {
               const cleanQuality = normalizeQuality(enc.resolution);
               const codec = enc.readable?.codec;
               if (Array.isArray(enc.files)) {
-                // Prioritize HubCloud and GDFlix which return direct .mkv streams
+                // Prioritize HubCloud and GDFlix which provide direct playable streams
                 const sortedFiles = [...enc.files].sort((a, b) => {
                   const aText = ((a.host || "") + (a.short || "")).toLowerCase();
                   const bText = ((b.host || "") + (b.short || "")).toLowerCase();
-                  const aScore = /hubcloud|vcloud|gdflix|pixel/i.test(aText) ? 0 : 1;
-                  const bScore = /hubcloud|vcloud|gdflix|pixel/i.test(bText) ? 0 : 1;
+                  const aScore = /hubcloud|vcloud/i.test(aText) ? 1 : /gdflix/i.test(aText) ? 2 : 10;
+                  const bScore = /hubcloud|vcloud/i.test(bText) ? 1 : /gdflix/i.test(bText) ? 2 : 10;
                   return aScore - bScore;
                 });
 
-                for (const file of sortedFiles) {
+                for (const file of sortedFiles.slice(0, 2)) {
                   const hName = (file.host || file.short || "").toLowerCase();
-                  // Skip lockers that do not support direct streaming in ExoPlayer
                   if (hName.includes("mega") || hName.includes("filepress")) continue;
 
                   if (file.link) {
-                    const redirectUrl = new URL(
-                      file.link,
-                      `https://${ARCHIVE_HOST}`,
-                    ).href;
+                    const redirectUrl = new URL(file.link, `https://${ARCHIVE_HOST}`).href;
                     const hostLabel = file.host || file.short || "Cloud";
-                    tasks.push(
-                      resolveAndExtractFile(
-                        redirectUrl,
-                        cleanQuality,
-                        codec,
-                        hostLabel,
-                      ),
+                    await resolveAndExtractFile(redirectUrl, cleanQuality, codec, hostLabel);
+
+                    const directPlayable = streamLinks.filter(
+                      (s) => s.type === "m3u8" || s.type === "mp4" || s.type === "mkv",
                     );
+                    if (directPlayable.length >= 2) break;
                   }
                 }
               }
-            }
-
-            if (tasks.length > 0) {
-              let timer: any;
-              const timeoutPromise = new Promise((res) => {
-                timer = setTimeout(res, 15000);
-              });
-              await Promise.race([Promise.allSettled(tasks), timeoutPromise]);
-              if (timer) clearTimeout(timer);
+              const directPlayable = streamLinks.filter(
+                (s) => s.type === "m3u8" || s.type === "mp4" || s.type === "mkv",
+              );
+              if (directPlayable.length >= 2) break;
             }
           }
         } catch {
