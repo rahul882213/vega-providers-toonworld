@@ -249,12 +249,12 @@ export const getStream = async function ({
     if (targetUrl.includes("fastdlserver.site") || targetUrl.includes("fastdl")) {
       const candidateLockerUrls: string[] = [];
 
-      // Try openWebView solver to bypass Turnstile and extract Fast Cloud / ZipDisk buttons
+      // Try openWebView solver to bypass Turnstile and extract Fast Cloud / ZipDisk / GDFlix streams
       if (openWebView) {
         try {
           const waf = await openWebView(targetUrl, {
-            title: "FastDL Stream Resolver",
-            description: "Tap 'FAST CLOUD / ZIPDISK' (or Login) to load video stream, then tap Done.",
+            title: "FastDL / GDFlix Stream Resolver",
+            description: "Please complete verification if prompted, then tap Done. Streams load automatically.",
             headers: {
               ...defaultHeaders,
               ...commonHeaders,
@@ -262,26 +262,61 @@ export const getStream = async function ({
             },
             waitForCookie: "cf_clearance",
             force: true,
+            injectedJavaScript: `
+              try {
+                // Prevent links from launching external browser (Brave, Chrome)
+                document.querySelectorAll('a[target]').forEach(function(el) {
+                  el.removeAttribute('target');
+                });
+                window.open = function(url) {
+                  window.location.href = url;
+                  return window;
+                };
+              } catch(e) {}
+              true;
+            `,
           });
 
-          // Check if webview navigated away to a direct locker
+          // Check if webview navigated away to a direct locker (e.g. gdflix, fastcloud)
           if (waf.url && waf.url !== targetUrl && !waf.url.includes("fastdlserver.site")) {
-            candidateLockerUrls.push(waf.url);
+            candidateLockerUrls.unshift(waf.url);
           }
 
-          // Inspect returned HTML for Fast Cloud / Zipdisk / GDrive buttons
+          // Inspect returned HTML for Fast Cloud / Zipdisk / GDFlix / GDrive buttons
           if (waf.data) {
             const $w = cheerio.load(waf.data);
+
+            // Direct Quick Download / Cloud Resume buttons if on GDFlix page
+            const quickHref =
+              $w("a:contains('QUICK DOWNLOAD'), a:contains('Quick Download'), a.btn-danger").attr("href");
+            if (quickHref) {
+              const fullQuick = quickHref.startsWith("http")
+                ? quickHref
+                : new URL(quickHref, waf.url || targetUrl).href;
+              candidateLockerUrls.unshift(fullQuick);
+            }
+
+            const resumeHref =
+              $w("a:contains('CLOUD RESUME'), a:contains('Cloud Resume'), a.btn-success").attr("href");
+            if (resumeHref) {
+              const fullResume = resumeHref.startsWith("http")
+                ? resumeHref
+                : new URL(resumeHref, waf.url || targetUrl).href;
+              candidateLockerUrls.unshift(fullResume);
+            }
+
             $w("a[href]").each((_: number, el: any) => {
               const h = $w(el).attr("href");
               const text = $w(el).text().trim().toLowerCase();
               if (h && !h.startsWith("#") && !h.startsWith("javascript:")) {
-                const abs = h.startsWith("http") ? h : new URL(h, targetUrl).href;
+                const abs = h.startsWith("http") ? h : new URL(h, waf.url || targetUrl).href;
                 if (
                   text.includes("fast cloud") ||
                   text.includes("zipdisk") ||
-                  text.includes("login") ||
-                  /fastcloud|zipdisk|hubcloud|vcloud|drive\.google|workers\.dev/i.test(abs)
+                  text.includes("quick") ||
+                  text.includes("resume") ||
+                  text.includes("download") ||
+                  /gdflix|fastcloud|zipdisk|hubcloud|vcloud|drive\.google|googleusercontent|workers\.dev/i.test(abs)
                 ) {
                   candidateLockerUrls.unshift(abs); // prioritize
                 } else if (!abs.includes("fastdlserver.site")) {
@@ -293,7 +328,7 @@ export const getStream = async function ({
             // Extract links from script regex
             const scriptMatches =
               (waf.data || "").match(
-                /(https?:\/\/[^\s"'<>]*(?:fastcloud|zipdisk|hubcloud|vcloud|drive\.google|workers\.dev)[^\s"'<>]*)/gi,
+                /(https?:\/\/[^\s"'<>]*(?:gdflix|fastcloud|zipdisk|hubcloud|vcloud|drive\.google|googleusercontent|workers\.dev)[^\s"'<>]*)/gi,
               ) || [];
             for (const sm of scriptMatches) {
               if (!candidateLockerUrls.includes(sm)) candidateLockerUrls.unshift(sm);
@@ -322,6 +357,37 @@ export const getStream = async function ({
               for (const s of hcStreams) addStream(s);
             }
           } catch {}
+        } else if (/gdflix/i.test(candUrl)) {
+          try {
+            const gdStreams = await gdflixExtractor(
+              candUrl,
+              signal,
+              axios,
+              cheerio,
+              {
+                ...defaultHeaders,
+                ...commonHeaders,
+                Referer: candUrl,
+              },
+              providerContext,
+            );
+            if (Array.isArray(gdStreams)) {
+              for (const s of gdStreams) addStream(s);
+            }
+          } catch (gdErr) {
+            console.warn("gdflixExtractor error:", gdErr);
+          }
+          // Also provide GDFlix web stream as a fallback option
+          addStream({
+            server: "GDFlix Cloud",
+            link: candUrl,
+            type: "iframe",
+            quality: "1080",
+            headers: {
+              Referer: targetUrl,
+              "User-Agent": commonHeaders["User-Agent"] || defaultHeaders["User-Agent"],
+            },
+          });
         } else if (/fastcloud|zipdisk/i.test(candUrl)) {
           try {
             const zcStreams = await zcloudExtractor(
@@ -336,13 +402,27 @@ export const getStream = async function ({
               for (const s of zcStreams) addStream(s);
             }
           } catch {}
-        } else if (/\.(mp4|mkv|m3u8)(\?|$)/i.test(candUrl)) {
+        } else if (/drive\.google\.com|googleusercontent\.com/i.test(candUrl)) {
+          let directGoogle = candUrl;
+          if (candUrl.includes("drive.google.com/file/d/")) {
+            const fileId = candUrl.split("/d/")[1]?.split("/")[0];
+            if (fileId) {
+              directGoogle = `https://drive.google.com/uc?export=download&id=${fileId}`;
+            }
+          }
+          addStream({
+            server: "Google Drive Fast",
+            link: directGoogle,
+            type: "mkv",
+            quality: "1080",
+          });
+        } else if (/workers\.dev|\.(mp4|mkv|m3u8)(\?|$)/i.test(candUrl)) {
           const ext = candUrl.includes(".m3u8") ? "m3u8" : candUrl.includes(".mp4") ? "mp4" : "mkv";
           addStream({
-            server: "Direct Stream",
+            server: "Cloud Direct",
             link: candUrl,
             type: ext,
-            quality: "720",
+            quality: "1080",
           });
         }
       }
