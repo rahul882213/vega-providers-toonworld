@@ -316,20 +316,7 @@ export async function getStream({
           extractedCount++;
         }
 
-        // If direct extractor did not return streams, add host link as low-priority iframe server (exclude unplayable lockers like mega.nz)
-        if (extractedCount === 0 && hostLink.startsWith("http") && !hostLink.includes("mega.nz") && !hostLink.includes("filepress")) {
-          addStream({
-            server: `ToonWorld Web Mirror (${quality || "HD"} - ${hostName || "Cloud"})`,
-            link: hostLink,
-            type: "iframe",
-            quality: quality || "720",
-            tag: tag,
-            headers: {
-              Referer: targetUrl,
-              "User-Agent": commonHeaders["User-Agent"] || "Mozilla/5.0",
-            },
-          });
-        }
+
       } catch {
         // Network or timeout error resolving redirect
       }
