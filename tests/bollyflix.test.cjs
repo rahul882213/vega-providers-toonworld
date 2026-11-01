@@ -308,7 +308,7 @@ test("stream.ts handles fastdlserver links gracefully", async () => {
   });
 
   assert.ok(streams.length > 0);
-  assert.equal(streams[0].server, "FastDL (Google Drive)");
+  assert.ok(streams[0].server.includes("FastDL"));
 });
 
 test("settings.ts exports getSettingsSchema", async () => {

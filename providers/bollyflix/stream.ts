@@ -1,6 +1,8 @@
 import { Stream, ProviderContext } from "../types";
 import { hubcloudExtractor } from "../extractors/hubcloud";
 import { gdflixExtractor } from "../extractors/gdflix";
+import { zcloudExtractor } from "../extractors/zcloud";
+import { gofileExtractor } from "../extractors/gofile";
 
 const defaultHeaders: Record<string, string> = {
   "User-Agent":
@@ -21,16 +23,20 @@ const sortStreams = (streams: Stream[], isDownload?: boolean): Stream[] => {
     const sA = (a.server || "").toLowerCase();
     const sB = (b.server || "").toLowerCase();
 
+    // Direct video streams (mp4, mkv, m3u8) should always take precedence over web iframes
+    const aIsDirect = a.type === "mkv" || a.type === "mp4" || a.type === "m3u8";
+    const bIsDirect = b.type === "mkv" || b.type === "mp4" || b.type === "m3u8";
+    if (aIsDirect && !bIsDirect) return -1;
+    if (!aIsDirect && bIsDirect) return 1;
+
     if (isDownload) {
-      // Prioritize download-optimized lockers
-      const aIsDl = /fromsmash|multiup|gdrive|fastdl|direct|download/i.test(sA);
-      const bIsDl = /fromsmash|multiup|gdrive|fastdl|direct|download/i.test(sB);
+      const aIsDl = /cf storage|pixeldrain|fromsmash|multiup|gdrive|fastdl|direct|download/i.test(sA);
+      const bIsDl = /cf storage|pixeldrain|fromsmash|multiup|gdrive|fastdl|direct|download/i.test(sB);
       if (aIsDl && !bIsDl) return -1;
       if (!aIsDl && bIsDl) return 1;
     } else {
-      // Prioritize fast streaming servers
-      const aIsFast = /direct|fastdl|stream|gdrive/i.test(sA);
-      const bIsFast = /direct|fastdl|stream|gdrive/i.test(sB);
+      const aIsFast = /cf storage|pixeldrain|direct|fast cloud|zipdisk|gdrive/i.test(sA);
+      const bIsFast = /cf storage|pixeldrain|direct|fast cloud|zipdisk|gdrive/i.test(sB);
       if (aIsFast && !bIsFast) return -1;
       if (!aIsFast && bIsFast) return 1;
     }
@@ -46,6 +52,7 @@ export const unlockLinksmod = async function (
   axios: any,
   cheerio: any,
   commonHeaders: Record<string, string>,
+  providerContext?: ProviderContext,
   signal?: AbortSignal,
 ): Promise<{ server: string; link: string; type: string }[]> {
   const extracted: { server: string; link: string; type: string }[] = [];
@@ -94,19 +101,42 @@ export const unlockLinksmod = async function (
     }
 
     const $2 = cheerio.load(postHtml);
+    const rawLinks: string[] = [];
+
     $2("a").each((_: number, el: any) => {
       const href = $2(el).attr("href");
       if (!href || !href.startsWith("http")) return;
       if (href.includes("bollyflix") || href.includes("linksmod.top")) return;
+      if (!rawLinks.includes(href)) rawLinks.push(href);
+    });
 
-      let server = "Cloud Storage";
-      let extType = "mkv";
+    for (const href of rawLinks) {
+      // If it is a Gofile link, attempt direct API extraction for native video playback
+      if (href.includes("gofile.io")) {
+        const gfId = href.split("/").filter(Boolean).pop();
+        if (gfId && !gfId.endsWith(".php") && !gfId.endsWith(".html")) {
+          try {
+            const gfResult = await gofileExtractor(gfId, axios, providerContext);
+            if (gfResult?.link) {
+              extracted.push({
+                server: "Gofile Direct",
+                link: gfResult.link,
+                type: "mkv",
+              });
+              continue;
+            }
+          } catch {}
+        }
+      }
 
+      // File locker landing pages (FromSmash, MultiUp, MegaUp, etc.)
+      // These are web download pages; mark as "iframe" so ExoPlayer doesn't crash on HTML
+      let server = "";
       if (href.includes("fromsmash.com")) {
         server = "FromSmash";
       } else if (href.includes("dgdrive.xyz")) {
         server = "DGDrive";
-      } else if (href.includes("multiup.org")) {
+      } else if (href.includes("multiup.org") || href.includes("multiup.io")) {
         server = "MultiUp";
       } else if (href.includes("send.cm")) {
         server = "Send.cm";
@@ -116,15 +146,32 @@ export const unlockLinksmod = async function (
         server = "PandaFiles";
       } else if (href.includes("desiupload.co")) {
         server = "DesiUpload";
-      } else if (/\.(mp4|mkv|m3u8)(\?|$)/i.test(href)) {
-        server = "Direct Link";
-        extType = href.includes(".m3u8") ? "m3u8" : href.includes(".mp4") ? "mp4" : "mkv";
+      } else if (href.includes("megaup.net")) {
+        server = "MegaUp";
+      } else if (href.includes("mixdrop")) {
+        server = "MixDrop";
+      } else if (href.includes("1fichier.com")) {
+        server = "1Fichier";
+      } else if (href.includes("dailyuploads.net")) {
+        server = "DailyUploads";
+      } else if (href.includes("vikingfile.com")) {
+        server = "VikingFile";
       }
 
-      if (!extracted.some((e) => e.link === href)) {
-        extracted.push({ server, link: href, type: extType });
+      if (server) {
+        extracted.push({ server, link: href, type: "iframe" });
+        continue;
       }
-    });
+
+      // Check if it is a direct video stream URL
+      if (/\.(mp4|mkv|m3u8)(\?|$)/i.test(href)) {
+        const extType = href.includes(".m3u8") ? "m3u8" : href.includes(".mp4") ? "mp4" : "mkv";
+        extracted.push({ server: "Direct Stream", link: href, type: extType });
+        continue;
+      }
+
+      extracted.push({ server: "Cloud Storage", link: href, type: "iframe" });
+    }
   } catch (err) {
     console.warn("Linksmod unlock error:", err);
   }
@@ -183,7 +230,7 @@ export const getStream = async function ({
 
     // 2. LinksMod Resolver (Direct Locker links)
     if (targetUrl.includes("linksmod.top")) {
-      const unlocked = await unlockLinksmod(targetUrl, axios, cheerio, commonHeaders, signal);
+      const unlocked = await unlockLinksmod(targetUrl, axios, cheerio, commonHeaders, providerContext, signal);
       for (const u of unlocked) {
         addStream({
           server: u.server,
@@ -198,16 +245,16 @@ export const getStream = async function ({
       }
     }
 
-    // 3. FastDL (Google Drive / Fast Server)
+    // 3. FastDL (Google Drive / Fast Cloud / ZipDisk)
     if (targetUrl.includes("fastdlserver.site") || targetUrl.includes("fastdl")) {
-      let resolvedFastDl = false;
+      const candidateLockerUrls: string[] = [];
 
-      // Try openWebView solver if available to bypass Cloudflare Turnstile
+      // Try openWebView solver to bypass Turnstile and extract Fast Cloud / ZipDisk buttons
       if (openWebView) {
         try {
           const waf = await openWebView(targetUrl, {
-            title: "Resolving FastDL Google Drive Stream",
-            description: "Please complete the verification if prompted.",
+            title: "FastDL Stream Resolver",
+            description: "Tap 'FAST CLOUD / ZIPDISK' (or Login) to load video stream, then tap Done.",
             headers: {
               ...defaultHeaders,
               ...commonHeaders,
@@ -217,15 +264,39 @@ export const getStream = async function ({
             force: true,
           });
 
+          // Check if webview navigated away to a direct locker
           if (waf.url && waf.url !== targetUrl && !waf.url.includes("fastdlserver.site")) {
-            targetUrl = waf.url;
-            resolvedFastDl = true;
-          } else if (waf.data) {
+            candidateLockerUrls.push(waf.url);
+          }
+
+          // Inspect returned HTML for Fast Cloud / Zipdisk / GDrive buttons
+          if (waf.data) {
             const $w = cheerio.load(waf.data);
-            const direct = $w("a#downloadBtn, a.btn-success, a.btn-primary, a[href*='drive.google.com'], a[href*='hubcloud']").first().attr("href");
-            if (direct && direct.startsWith("http")) {
-              targetUrl = direct;
-              resolvedFastDl = true;
+            $w("a[href]").each((_: number, el: any) => {
+              const h = $w(el).attr("href");
+              const text = $w(el).text().trim().toLowerCase();
+              if (h && !h.startsWith("#") && !h.startsWith("javascript:")) {
+                const abs = h.startsWith("http") ? h : new URL(h, targetUrl).href;
+                if (
+                  text.includes("fast cloud") ||
+                  text.includes("zipdisk") ||
+                  text.includes("login") ||
+                  /fastcloud|zipdisk|hubcloud|vcloud|drive\.google|workers\.dev/i.test(abs)
+                ) {
+                  candidateLockerUrls.unshift(abs); // prioritize
+                } else if (!abs.includes("fastdlserver.site")) {
+                  candidateLockerUrls.push(abs);
+                }
+              }
+            });
+
+            // Extract links from script regex
+            const scriptMatches =
+              (waf.data || "").match(
+                /(https?:\/\/[^\s"'<>]*(?:fastcloud|zipdisk|hubcloud|vcloud|drive\.google|workers\.dev)[^\s"'<>]*)/gi,
+              ) || [];
+            for (const sm of scriptMatches) {
+              if (!candidateLockerUrls.includes(sm)) candidateLockerUrls.unshift(sm);
             }
           }
         } catch (wafErr) {
@@ -233,17 +304,62 @@ export const getStream = async function ({
         }
       }
 
-      // If not redirected, still add FastDL as a primary fast download server
-      addStream({
-        server: "FastDL (Google Drive)",
-        link: targetUrl,
-        type: "mkv",
-        quality: "720",
-        headers: {
-          Referer: "https://bollyflix.church/",
-          "User-Agent": commonHeaders["User-Agent"] || defaultHeaders["User-Agent"],
-        },
-      });
+      // Process any extracted candidate locker links
+      for (const candUrl of candidateLockerUrls) {
+        if (/hubcloud|vcloud/i.test(candUrl)) {
+          try {
+            const hcStreams = await hubcloudExtractor(
+              candUrl,
+              signal,
+              axios,
+              cheerio,
+              { ...defaultHeaders, ...commonHeaders, Referer: candUrl },
+              providerContext,
+              isDownload,
+              "bollyflix",
+            );
+            if (Array.isArray(hcStreams)) {
+              for (const s of hcStreams) addStream(s);
+            }
+          } catch {}
+        } else if (/fastcloud|zipdisk/i.test(candUrl)) {
+          try {
+            const zcStreams = await zcloudExtractor(
+              candUrl,
+              signal,
+              axios,
+              cheerio,
+              { ...defaultHeaders, ...commonHeaders, Referer: candUrl },
+              providerContext,
+            );
+            if (Array.isArray(zcStreams)) {
+              for (const s of zcStreams) addStream(s);
+            }
+          } catch {}
+        } else if (/\.(mp4|mkv|m3u8)(\?|$)/i.test(candUrl)) {
+          const ext = candUrl.includes(".m3u8") ? "m3u8" : candUrl.includes(".mp4") ? "mp4" : "mkv";
+          addStream({
+            server: "Direct Stream",
+            link: candUrl,
+            type: ext,
+            quality: "720",
+          });
+        }
+      }
+
+      // If no direct video streams extracted yet, add fallback iframe so player does not crash
+      if (streamLinks.length === 0) {
+        addStream({
+          server: "FastDL Web Player",
+          link: targetUrl,
+          type: "iframe",
+          quality: "720",
+          headers: {
+            Referer: "https://bollyflix.church/",
+            "User-Agent": commonHeaders["User-Agent"] || defaultHeaders["User-Agent"],
+          },
+        });
+      }
     }
 
     // 4. HubCloud Extractor
@@ -304,7 +420,7 @@ export const getStream = async function ({
       });
     }
 
-    // Fallback: Ensure at least one stream is always returned to prevent Vega App errors
+    // Fallback: Ensure at least one stream is always returned
     if (streamLinks.length === 0 && targetUrl) {
       addStream({
         server: "BollyFlix Player",
