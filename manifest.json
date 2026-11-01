@@ -541,5 +541,14 @@
     "type": "global",
     "disabled": false,
     "hasSettings": true
+  },
+  {
+    "display_name": "BollyFlix",
+    "value": "bollyflix",
+    "version": "1.0.0",
+    "icon": "https://cdn.jsdelivr.net/gh/rahul882213/vega-providers-toonworld@main/assets/bollyflix.png",
+    "type": "global",
+    "disabled": false,
+    "hasSettings": true
   }
 ]

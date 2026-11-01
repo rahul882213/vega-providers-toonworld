@@ -1,0 +1,17 @@
+{
+  "id": "bollyflix",
+  "name": "BollyFlix",
+  "version": "1.0.0",
+  "type": "mixed",
+  "icon": "https://cdn.jsdelivr.net/gh/rahul882213/vega-providers-toonworld@main/assets/bollyflix.png",
+  "description": "Bollywood, Hollywood Hindi Dual Audio, South Hindi Dubbed movies & web series from BollyFlix.",
+  "author": "Vega Community",
+  "repository": "https://github.com/rahul882213/vega-providers-toonworld",
+  "mainUrl": "https://bollyflix.church",
+  "capabilities": {
+    "catalog": true,
+    "search": true,
+    "episodes": true,
+    "streams": true
+  }
+}
