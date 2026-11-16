@@ -12,6 +12,42 @@ const defaultHeaders: Record<string, string> = {
   "Accept-Language": "en-US,en;q=0.9",
 };
 
+export function normalizeWorld4uImageUrl(
+  rawUrl: string | undefined,
+  baseUrl: string = DEFAULT_W4U_BASE_URL,
+): string {
+  if (!rawUrl || typeof rawUrl !== "string") return "";
+  let img = rawUrl.trim();
+  if (!img || img.startsWith("data:")) return "";
+  if (img.startsWith("//")) img = `https:${img}`;
+  else if (img.startsWith("/")) img = `${baseUrl.replace(/\/+$/, "")}${img}`;
+
+  // World4uFree hotlink-protects /wp-content/uploads/ (returns HTTP 403 without Referer),
+  // and its uploaded filenames are exact TMDB poster hashes. Rewrite to image.tmdb.org.
+  const tmdbHashMatch = img.match(
+    /\/wp-content\/uploads\/(?:\d{4}\/\d{2}\/)?([A-Za-z0-9_-]{20,40}?)(?:-\d+x\d+)?\.(jpe?g|png|webp)(?:[?#].*)?$/i,
+  );
+  if (tmdbHashMatch) {
+    return `https://image.tmdb.org/t/p/w500/${tmdbHashMatch[1]}.${tmdbHashMatch[2].toLowerCase()}`;
+  }
+  return img;
+}
+
+export function extractWorld4uImgAttr(imgEl: any, baseUrl: string): string {
+  if (!imgEl || typeof imgEl.attr !== "function") return "";
+  const candidates = [
+    imgEl.attr("data-original"),
+    imgEl.attr("data-lazy-src"),
+    imgEl.attr("data-src"),
+    imgEl.attr("src"),
+  ];
+  for (const c of candidates) {
+    const cleaned = normalizeWorld4uImageUrl(c, baseUrl);
+    if (cleaned) return cleaned;
+  }
+  return "";
+}
+
 export async function getWorld4uBaseUrl(): Promise<string> {
   try {
     const raw = await getBaseUrl("w4u");
@@ -164,13 +200,7 @@ async function posts({
           .trim();
 
         const imgEl = card.find("img").first();
-        let image =
-          imgEl.attr("data-original") ||
-          imgEl.attr("data-src") ||
-          imgEl.attr("src") ||
-          "";
-        if (image.startsWith("//")) image = `https:${image}`;
-        else if (image.startsWith("/")) image = `${baseUrl}${image}`;
+        const image = extractWorld4uImgAttr(imgEl, baseUrl);
 
         if (title && normalizedLink) {
           seen.add(normalizedLink);
@@ -190,9 +220,7 @@ async function posts({
         .each((_, element) => {
           const title = $(element).find(".post-thumb a").attr("title");
           const link = $(element).find(".post-thumb a").attr("href");
-          const image =
-            $(element).find(".post-thumb img").attr("data-src") ||
-            $(element).find(".post-thumb img").attr("src");
+          const image = extractWorld4uImgAttr($(element).find(".post-thumb img").first(), baseUrl);
           if (title && link && image) {
             const postUrl = new URL(link, `${baseUrl}/`);
             const normalizedLink = `${postUrl.pathname}${postUrl.search}${postUrl.hash}`;

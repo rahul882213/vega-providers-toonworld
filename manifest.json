@@ -11,7 +11,7 @@
   {
     "display_name": "World4uFree",
     "value": "world4u",
-    "version": "1.6",
+    "version": "1.7",
     "icon": "https://cdn.jsdelivr.net/gh/rahul882213/vega-providers-toonworld@main/assets/world4u.png",
     "type": "global",
     "disabled": false

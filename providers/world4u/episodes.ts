@@ -1,7 +1,7 @@
 import { EpisodeLink, ProviderContext } from "../types";
 import { throwProviderError } from "../providerErrors";
 import { attachW4uMeta, readW4uMeta } from "./meta";
-import { getWorld4uBaseUrl } from "./posts";
+import { extractWorld4uImgAttr, getWorld4uBaseUrl } from "./posts";
 
 const defaultHeaders: Record<string, string> = {
   "User-Agent":
@@ -52,10 +52,7 @@ export const getEpisodes = async function ({
           idx + 1,
       );
       const epName = li.find(".ep-title").first().text().trim();
-      const thumb =
-        li.find(".ep-thumb img").attr("src") ||
-        li.find(".ep-thumb img").attr("data-original") ||
-        undefined;
+      const thumb = extractWorld4uImgAttr(li.find(".ep-thumb img").first(), baseUrl) || undefined;
 
       const title = epName
         ? `Episode ${String(epNum).padStart(2, "0")} - ${epName}`

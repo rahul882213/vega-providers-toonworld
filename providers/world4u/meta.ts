@@ -1,7 +1,7 @@
 import { Info, Link, ProviderContext } from "../types";
 import { throwProviderError } from "../providerErrors";
 import { applyCinemetaMeta, getCinemetaMeta } from "../getCinemetaMeta";
-import { getWorld4uBaseUrl } from "./posts";
+import { extractWorld4uImgAttr, getWorld4uBaseUrl, normalizeWorld4uImageUrl } from "./posts";
 
 const defaultHeaders: Record<string, string> = {
   "User-Agent":
@@ -71,12 +71,13 @@ export async function lookupTmdbByTitleAndPoster({
   type: "movie" | "series";
   axios: ProviderContext["axios"];
   commonHeaders?: Record<string, string>;
-}): Promise<{ tmdbId: string; imdbId: string; year: string }> {
+}): Promise<{ tmdbId: string; imdbId: string; year: string; posterPath?: string }> {
   let tmdbId = "";
   let imdbId = "";
   let resolvedYear = year || "";
+  let posterPath = "";
 
-  if (!title) return { tmdbId, imdbId, year: resolvedYear };
+  if (!title) return { tmdbId, imdbId, year: resolvedYear, posterPath };
 
   const mediaKind = type === "series" ? "tv" : "movie";
   try {
@@ -123,6 +124,9 @@ export async function lookupTmdbByTitleAndPoster({
 
       if (matched?.id) {
         tmdbId = String(matched.id);
+        if (typeof matched.poster_path === "string" && matched.poster_path) {
+          posterPath = matched.poster_path;
+        }
         if (!resolvedYear) {
           resolvedYear = String(
             matched.release_date || matched.first_air_date || "",
@@ -149,7 +153,7 @@ export async function lookupTmdbByTitleAndPoster({
     } catch {}
   }
 
-  return { tmdbId, imdbId, year: resolvedYear };
+  return { tmdbId, imdbId, year: resolvedYear, posterPath };
 }
 
 export const getMeta = async function ({
@@ -230,17 +234,12 @@ export const getMeta = async function ({
       "";
 
     let image =
-      $(".content-poster img").first().attr("src") ||
-      $(".content-poster img").first().attr("data-original") ||
-      $(".content-poster img").first().attr("data-src") ||
-      $("meta[property='og:image']").attr("content") ||
-      $(".splash-bg img").first().attr("src") ||
-      $(".wp-caption img").first().attr("data-src") ||
-      $(".entry-content img").first().attr("data-src") ||
-      $(".entry-content img").first().attr("src") ||
+      extractWorld4uImgAttr($(".content-poster img").first(), baseUrl) ||
+      normalizeWorld4uImageUrl($("meta[property='og:image']").attr("content"), baseUrl) ||
+      extractWorld4uImgAttr($(".splash-bg img").first(), baseUrl) ||
+      extractWorld4uImgAttr($(".wp-caption img").first(), baseUrl) ||
+      extractWorld4uImgAttr($(".entry-content img").first(), baseUrl) ||
       "";
-    if (image.startsWith("//")) image = `https:${image}`;
-    else if (image.startsWith("/")) image = `${baseUrl}${image}`;
 
     const tags = $(".details-genre a")
       .map((_, el) => $(el).text().trim())
@@ -264,6 +263,9 @@ export const getMeta = async function ({
       imdbId = tmdbResolved.imdbId;
     }
     const year = yearMatch || tmdbResolved.year;
+    if ((!image || /world4ufree\./i.test(image)) && tmdbResolved.posterPath) {
+      image = `https://image.tmdb.org/t/p/w500${tmdbResolved.posterPath}`;
+    }
 
     const links: Link[] = [];
 
