@@ -6,7 +6,7 @@ import {
   getCinemetaMeta,
   getCinemetaSeason,
 } from "../getCinemetaMeta";
-import { fetchRogWithWAF, getRogMoviesBaseUrl } from "./posts";
+import { fetchRogWithWAF, getRogMoviesBaseUrl, normalizeRogLockerUrl } from "./posts";
 
 export const getMeta = async ({
   link,
@@ -35,7 +35,12 @@ export const getMeta = async ({
     if (!title) {
       const heading = infoContainer?.find("h3");
       const titleRegex = /Name: (.+)/;
-      title = heading?.next("p")?.text()?.match(titleRegex)?.[1] || "";
+      title =
+        heading?.next("p")?.text()?.match(titleRegex)?.[1] ||
+        $("h1").first().text().replace(/^Download\s+/i, "").trim() ||
+        $("meta[property='og:title']").attr("content")?.replace(/^Download\s+/i, "").trim() ||
+        $("title").first().text().replace(/^Download\s+/i, "").trim() ||
+        "";
     }
 
     // imdbId
@@ -227,7 +232,7 @@ export const getMeta = async ({
       }
 
       if (!btn || !btn.length) return;
-      const btnHref = btn.attr("href") || "";
+      const btnHref = normalizeRogLockerUrl(btn.attr("href") || "");
       if (!btnHref || btnHref === "/" || btnHref === "#") return;
 
       if (

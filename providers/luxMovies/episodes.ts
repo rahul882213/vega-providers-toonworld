@@ -6,7 +6,7 @@ import {
   readCinemetaContext,
 } from "../getCinemetaMeta";
 import { enrichEpisodesWithSkipTimings } from "../theintrodb";
-import { fetchRogWithWAF } from "./posts";
+import { fetchRogWithWAF, normalizeRogLockerUrl } from "./posts";
 
 export const getEpisodes = async function ({
   url,
@@ -66,10 +66,23 @@ export const getEpisodes = async function ({
         }
 
         if (title && link && !episodes.some((e) => e.title === title)) {
-          episodes.push({ title, link });
+          episodes.push({ title, link: normalizeRogLockerUrl(link) });
         }
       }
     });
+
+    if (episodes.length === 0) {
+      const hasPackButtons =
+        $(
+          "a[href*='zee-dl'], a:contains('G-Direct'), a[href*='vegadrive'], a:contains('V-Drive'), a[href*='vcloud'], a[href*='hubcloud']",
+        ).length > 0;
+      if (hasPackButtons) {
+        episodes.push({
+          title: "Episode 01",
+          link: normalizeRogLockerUrl(context.requestUrl),
+        });
+      }
+    }
 
     const quickDownload =
       await providerContext.kvStore?.get<boolean>("luxMovies_quickDownload");

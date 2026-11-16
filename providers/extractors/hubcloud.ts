@@ -97,7 +97,7 @@ export async function hubcloudExtractor(
 
     let vLinkRes: any;
     try {
-      vLinkRes = await axios(`${link}`, { headers, signal });
+      vLinkRes = await (typeof axios.get === "function" ? axios.get(link, { headers, signal }) : axios(link, { headers, signal }));
     } catch (error: any) {
       if (error.response?.status === 403) {
         if (openWebView) {
@@ -118,7 +118,7 @@ export async function hubcloudExtractor(
           headers["Cookie"] =
             (headers["Cookie"] ? headers["Cookie"] + "; " : "") +
             wafResult.cookies;
-          vLinkRes = await axios(`${link}`, { headers, signal });
+          vLinkRes = await (typeof axios.get === "function" ? axios.get(link, { headers, signal }) : axios(link, { headers, signal }));
         } else {
           console.log(
             `hubcloudExtractor: 403 Forbidden for ${link}, but openWebView solver is not available!`,

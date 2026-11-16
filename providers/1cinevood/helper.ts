@@ -8,6 +8,14 @@ const wafSessionCache = new Map<
   { cookies?: string; userAgent?: string }
 >();
 
+export function normalizeCinewoodLink(rawUrl: string): string {
+  if (!rawUrl || typeof rawUrl !== "string") return rawUrl;
+  return rawUrl.replace(
+    /^https?:\/\/(?:www\.)?mobilejsr\.(?:best|com|org|net|xyz|top|live|in)\//i,
+    "https://nexdrive.store/",
+  );
+}
+
 export async function getCinewoodBaseUrl(): Promise<string> {
   if (resolvedBaseUrl) return resolvedBaseUrl;
 
@@ -42,13 +50,15 @@ export function isWafChallenge(html: string): boolean {
 }
 
 export async function getWithWAF(
-  url: string,
+  rawUrl: string,
   axios: any,
   openWebView: any,
   headers: any,
 ): Promise<any> {
+  const url = normalizeCinewoodLink(rawUrl);
   const baseUrl = url.split("/").slice(0, 3).join("/");
   const cachedSession = wafSessionCache.get(baseUrl);
+
   const reqHeaders: Record<string, string> = {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -57,6 +67,7 @@ export async function getWithWAF(
     ...headers,
     Referer: `${baseUrl}/`,
   };
+
   if (cachedSession?.userAgent) {
     reqHeaders["User-Agent"] = cachedSession.userAgent;
   }
@@ -75,6 +86,19 @@ export async function getWithWAF(
     }
     return res;
   } catch (error: any) {
+    // If a genxfm URL failed on another mirror, try nexdrive.store before triggering openWebView
+    if (url.includes("/genxfm") && !url.includes("nexdrive.store")) {
+      try {
+        const nexUrl = url.replace(/^https?:\/\/[^/]+\//i, "https://nexdrive.store/");
+        const nexRes = await axios.get(nexUrl, {
+          headers: { ...reqHeaders, Referer: "https://nexdrive.store/" },
+        });
+        if (typeof nexRes?.data === "string" && !isWafChallenge(nexRes.data)) {
+          return nexRes;
+        }
+      } catch {}
+    }
+
     if (
       (error.response?.status === 403 || error.response?.status === 503) &&
       openWebView
@@ -92,6 +116,7 @@ export async function getWithWAF(
 
       const solvedCookies = wafResult?.cookies || wafResult?.cookie;
       const solvedUa = wafResult?.userAgent || reqHeaders["User-Agent"];
+
       if (solvedCookies || solvedUa) {
         wafSessionCache.set(baseUrl, {
           cookies: solvedCookies,

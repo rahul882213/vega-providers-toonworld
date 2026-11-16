@@ -28,11 +28,19 @@ const defaultHeaders = {
   "Accept-Language": "en-US,en;q=0.9",
 };
 
+const LEGACY_FILTER_MAP: Record<string, string> = {
+  "bollywood-movies": "movies/bollywood",
+  "dual-audio-movies": "movies/dual-audio-movies",
+  "south-hindi-movies": "movies/south-hindi-dubbed",
+  "hollywood-movies": "movies/hollywood",
+};
+
 export const parseArticles = ($: any, baseUrl: string): Post[] => {
   const posts: Post[] = [];
 
   $("article").each((_: number, el: any) => {
     const $el = $(el);
+
     const linkEl = $el.find("header h2.title a, h2 a, a.post-image").first();
     const rawLink = linkEl.attr("href") || $el.find("a").first().attr("href");
     if (!rawLink) return;
@@ -46,7 +54,6 @@ export const parseArticles = ($: any, baseUrl: string): Post[] => {
       $el.find("a.post-image").attr("title") ||
       $el.find("img").attr("alt") ||
       "";
-
     if (!rawTitle) return;
 
     // Clean title for display: remove "Download " prefix
@@ -92,16 +99,19 @@ export const getPosts = async function ({
   const { axios, cheerio, commonHeaders } = providerContext;
   const baseUrl = await getBollyflixBaseUrl(providerContext);
 
-  let targetUrl = baseUrl;
-  const cleanFilter = (filter || "").trim().replace(/^\/+|\/+$/g, "");
+  const rawFilter = (filter || "").trim().replace(/^\/+|\/+$/g, "");
+  const cleanFilter = LEGACY_FILTER_MAP[rawFilter] || rawFilter;
 
-  if (page <= 1) {
-    targetUrl = cleanFilter ? `${baseUrl}/${cleanFilter}/` : `${baseUrl}/`;
-  } else {
-    targetUrl = cleanFilter
-      ? `${baseUrl}/${cleanFilter}/page/${page}/`
+  const buildUrl = (slug: string) => {
+    if (page <= 1) {
+      return slug ? `${baseUrl}/${slug}/` : `${baseUrl}/`;
+    }
+    return slug
+      ? `${baseUrl}/${slug}/page/${page}/`
       : `${baseUrl}/page/${page}/`;
-  }
+  };
+
+  const targetUrl = buildUrl(cleanFilter);
 
   try {
     const res = await axios.get(targetUrl, {
@@ -117,6 +127,24 @@ export const getPosts = async function ({
     const $ = cheerio.load(res.data);
     return parseArticles($, baseUrl);
   } catch (err: any) {
+    // If a category path returns 404 on page 1, fallback to homepage rather than failing catalog test
+    const status = err?.response?.status || err?.status;
+    if (status === 404 && cleanFilter) {
+      try {
+        const fallbackUrl = buildUrl("");
+        const fallbackRes = await axios.get(fallbackUrl, {
+          headers: {
+            ...defaultHeaders,
+            ...commonHeaders,
+            Referer: baseUrl + "/",
+          },
+          signal,
+          timeout: 15000,
+        });
+        const $fb = cheerio.load(fallbackRes.data);
+        return parseArticles($fb, baseUrl);
+      } catch {}
+    }
     return throwProviderError("bollyflix", "getPosts", err);
   }
 };
@@ -135,10 +163,9 @@ export const getSearchPosts = async function ({
 }): Promise<Post[]> {
   const { axios, cheerio, commonHeaders } = providerContext;
   const baseUrl = await getBollyflixBaseUrl(providerContext);
-
   const query = encodeURIComponent(searchQuery || "");
-  let targetUrl = "";
 
+  let targetUrl = "";
   if (page <= 1) {
     targetUrl = `${baseUrl}/?s=${query}`;
   } else {

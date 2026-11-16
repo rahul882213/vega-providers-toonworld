@@ -6,7 +6,7 @@ import {
   readCinemetaContext,
 } from "../getCinemetaMeta";
 import { enrichEpisodesWithSkipTimings } from "../theintrodb";
-import { getWithWAF } from "./helper";
+import { getWithWAF, normalizeCinewoodLink } from "./helper";
 
 const formatEpisodeTitle = (fileName: string): string => {
   try {
@@ -30,6 +30,7 @@ function parseHtmlEpisodes($: any, requestUrl: string): EpisodeLink[] {
   container.find("h2, h3, h4, h5, p").each((_: number, element: any) => {
     const el = $(element);
     const text = el.text().replace(/\s+/g, " ").trim();
+
     if (
       /episodes?\s*[:\d\-]/i.test(text) ||
       /\bS\d{1,2}\s*E\d{1,3}\b/i.test(text) ||
@@ -49,20 +50,19 @@ function parseHtmlEpisodes($: any, requestUrl: string): EpisodeLink[] {
       while (nextP.length && !nextP.is("hr") && !nextP.find("a[href]").length) {
         nextP = nextP.next();
       }
-
       const candidateScope =
         nextP.length && nextP.find("a[href]").length ? nextP : el;
+
       const link =
-        candidateScope.find("a[href*='vcloud']").attr("href") ||
-        candidateScope.find("a[href*='hubcloud']").attr("href") ||
         candidateScope
-          .find("a:contains('M-Cloud'), a:contains('V-Cloud')")
+          .find("a[href*='zee-dl'], a[href*='fastdl'], a:contains('G-Direct')")
           .attr("href") ||
         candidateScope
-          .find("a[href*='fastdl'], a:contains('G-Direct')")
+          .find("a[href*='vegadrive'], a:contains('V-Drive'), a[href*='gdflix']")
           .attr("href") ||
+        candidateScope.find("a[href*='vcloud'], a[href*='hubcloud']").attr("href") ||
         candidateScope
-          .find("a[href*='vegadrive'], a[href*='gdflix']")
+          .find("a:contains('M-Cloud'), a:contains('V-Cloud'), a:contains('Zee-Cloud')")
           .attr("href") ||
         candidateScope.find(".btn-outline").parent().attr("href") ||
         candidateScope.find(".btn-outline").attr("href") ||
@@ -71,14 +71,14 @@ function parseHtmlEpisodes($: any, requestUrl: string): EpisodeLink[] {
       if (title && link && !episodes.some((e) => e.title === title)) {
         episodes.push({
           title,
-          link: new URL(link, requestUrl).href,
+          link: normalizeCinewoodLink(new URL(link, requestUrl).href),
         });
       }
     }
   });
 
   if (episodes.length === 0) {
-    container.find("a[href]").each((_: number, a: any) => {
+    $("a[href]").each((_: number, a: any) => {
       const text = $(a).text().replace(/\s+/g, " ").trim();
       const href = $(a).attr("href") || "";
       if (!href || href === "#" || href.startsWith("javascript:")) return;
@@ -87,7 +87,7 @@ function parseHtmlEpisodes($: any, requestUrl: string): EpisodeLink[] {
         text.match(/\bE0*(\d{1,3})\b/i);
       if (epMatch) {
         const title = `Episode ${epMatch[1].padStart(2, "0")}`;
-        const absHref = new URL(href, requestUrl).href;
+        const absHref = normalizeCinewoodLink(new URL(href, requestUrl).href);
         if (!episodes.some((e) => e.title === title || e.link === absHref)) {
           episodes.push({ title, link: absHref });
         }
@@ -95,18 +95,17 @@ function parseHtmlEpisodes($: any, requestUrl: string): EpisodeLink[] {
     });
   }
 
+  // If the page is a single-pack genxfm/nexdrive page with G-Direct / V-Drive / V-Cloud buttons,
+  // keep requestUrl as Episode 01 so getStream can extract G-Direct & V-Drive directly!
   if (episodes.length === 0) {
-    const directLocker =
-      container
-        .find(
-          "a[href*='vcloud'], a[href*='hubcloud'], a:contains('V-Cloud'), a:contains('M-Cloud'), a[href*='fastdl'], a:contains('G-Direct'), a[href*='gdflix'], a[href*='vegadrive']",
-        )
-        .first()
-        .attr("href") || "";
-    if (directLocker) {
+    const hasPackButtons =
+      $(
+        "a[href*='zee-dl'], a:contains('G-Direct'), a[href*='vegadrive'], a:contains('V-Drive'), a[href*='vcloud'], a[href*='hubcloud'], a[href*='gdflix']",
+      ).length > 0;
+    if (hasPackButtons) {
       episodes.push({
         title: "Episode 01",
-        link: new URL(directLocker, requestUrl).href,
+        link: normalizeCinewoodLink(requestUrl),
       });
     }
   }
@@ -128,18 +127,18 @@ export const getEpisodes = async function ({
     openWebView,
   } = providerContext;
   console.log("getEpisodeLinks", url);
-
   try {
     const context = readCinemetaContext(url);
-    const requestUrl = context.requestUrl;
+    const requestUrl = normalizeCinewoodLink(context.requestUrl);
     const parsedUrl = new URL(requestUrl);
     const baseUrl = parsedUrl.origin;
     const id = parsedUrl.pathname.split("/").filter(Boolean).pop() || "";
 
     const attachEpisodeContext = (epLink: string, epNum?: number): string => {
-      if (!context.imdbId) return epLink;
+      const normalizedEpLink = normalizeCinewoodLink(epLink);
+      if (!context.imdbId) return normalizedEpLink;
       try {
-        const u = new URL(epLink);
+        const u = new URL(normalizedEpLink);
         const params = new URLSearchParams(u.hash.replace(/^#/, ""));
         params.set(
           "cinemetaMeta",
@@ -153,7 +152,7 @@ export const getEpisodes = async function ({
         u.hash = params.toString();
         return u.href;
       } catch {
-        return epLink;
+        return normalizedEpLink;
       }
     };
 
@@ -192,6 +191,7 @@ export const getEpisodes = async function ({
     const enrich = async (episodes: EpisodeLink[]): Promise<EpisodeLink[]> => {
       const quickDownload =
         await providerContext.kvStore?.get<boolean>("1cinevood_quickDownload");
+
       const withContext = episodes.map((e, idx) => {
         const epMatch = e.title.match(/(\d+)/);
         const epNum = epMatch ? Number(epMatch[1]) : idx + 1;
@@ -200,13 +200,16 @@ export const getEpisodes = async function ({
           link: attachEpisodeContext(e.link, epNum),
         };
       });
+
       if (!context.imdbId || !context.season) {
         return withContext.map((e) => ({
           ...e,
           quickDownload: quickDownload ?? true,
         }));
       }
+
       let enriched = withContext;
+
       try {
         const cinemeta = await getCinemetaMeta(
           context.imdbId,
@@ -238,13 +241,14 @@ export const getEpisodes = async function ({
           console.warn("1CineVood: Skip timings lookup failed", e);
         }
       }
+
       return enriched.map((e) => ({
         ...e,
         quickDownload: quickDownload ?? true,
       }));
     };
 
-    // 1. If the link is a mobilejsr/genxfm/nexdrive/dotlink page (not oxxfile), fetch HTML directly first
+    // 1. If the link is a nexdrive/genxfm/mobilejsr/dotlink page (not oxxfile), fetch HTML directly first
     if (!requestUrl.includes("oxxfile")) {
       try {
         const pageRes = await getWithWAF(
@@ -262,36 +266,36 @@ export const getEpisodes = async function ({
           }
         }
       } catch (htmlErr: any) {
-        if (htmlErr?.response?.status === 403 && context.imdbId) {
+        if (context.imdbId) {
           const fallbackEps = await buildCinemetaFallbackEpisodes();
           if (fallbackEps.length > 0) {
             return await enrich(fallbackEps);
           }
         }
-        console.warn(
-          "1CineVood: HTML episode page fetch failed, trying pack API",
-          htmlErr?.message || htmlErr,
-        );
+        return [
+          {
+            title: "Episode 01",
+            link: attachEpisodeContext(requestUrl, 1),
+          },
+        ];
       }
     }
 
     // 2. Try oxxfile /api/packs/${id} JSON API
     const apiUrl = `${baseUrl}/api/packs/${id}`;
-    console.log("apiUrl:", apiUrl);
-
     let res;
     try {
       res = await getWithWAF(apiUrl, axios, openWebView, headers);
     } catch (error: any) {
       if (error.response?.status === 404) {
         const alternativeUrl = `${baseUrl}/api/s/${id}/`;
-        console.log("Trying alternative URL:", alternativeUrl);
         const altRes = await getWithWAF(
           alternativeUrl,
           axios,
           openWebView,
           headers,
         );
+
         let altData = altRes?.data;
         if (typeof altData === "string") {
           try {
@@ -310,7 +314,7 @@ export const getEpisodes = async function ({
         }
         return [];
       }
-      if (error.response?.status === 403 && context.imdbId) {
+      if (context.imdbId) {
         const fallbackEps = await buildCinemetaFallbackEpisodes();
         if (fallbackEps.length > 0) {
           return await enrich(fallbackEps);

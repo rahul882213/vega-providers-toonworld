@@ -6,7 +6,7 @@ import {
   getCinemetaMeta,
   getCinemetaSeason,
 } from "../getCinemetaMeta";
-import { getCinewoodBaseUrl, getWithWAF } from "./helper";
+import { getCinewoodBaseUrl, getWithWAF, normalizeCinewoodLink } from "./helper";
 
 const formatSeasonTag = (text: string): string => {
   const seMatch = text.match(/\b(S\d{1,2}\s*E\d{1,3}|S\d{1,2}|E\d{1,3})\b/i);
@@ -21,9 +21,10 @@ const formatSeasonTag = (text: string): string => {
 };
 
 const addStreamContextHash = (
-  targetUrl: string,
+  rawTargetUrl: string,
   meta: { imdbId?: string; title?: string; type?: string; season?: number },
 ): string => {
+  const targetUrl = normalizeCinewoodLink(rawTargetUrl);
   try {
     const parsed = new URL(targetUrl);
     const params = new URLSearchParams(parsed.hash.replace(/^#/, ""));
@@ -279,7 +280,7 @@ export const getMeta = async function ({
             links.push({
               title: displayTitle,
               quality: qualityMatch,
-              episodesLink: chosenHref,
+              episodesLink: normalizeCinewoodLink(chosenHref),
             });
           }
         } else {
@@ -361,7 +362,7 @@ export const getMeta = async function ({
                 .replace(/\|$/, "")
                 .trim(),
               quality: qualityMatch,
-              episodesLink: result.type === "series" ? linkHref : "",
+              episodesLink: result.type === "series" ? normalizeCinewoodLink(linkHref) : "",
               directLinks:
                 result.type === "movie"
                   ? [

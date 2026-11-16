@@ -2,7 +2,7 @@
   {
     "display_name": "Cinewood",
     "value": "1cinevood",
-    "version": "1.4",
+    "version": "1.5",
     "icon": "https://cdn.jsdelivr.net/gh/rahul882213/vega-providers-toonworld@main/assets/1cinevood.png",
     "type": "global",
     "disabled": false,
@@ -11,7 +11,7 @@
   {
     "display_name": "World4uFree",
     "value": "world4u",
-    "version": "1.5",
+    "version": "1.6",
     "icon": "https://cdn.jsdelivr.net/gh/rahul882213/vega-providers-toonworld@main/assets/world4u.png",
     "type": "global",
     "disabled": false
@@ -19,7 +19,7 @@
   {
     "display_name": "RogMovies",
     "value": "luxMovies",
-    "version": "1.5",
+    "version": "1.6",
     "icon": "https://cdn.jsdelivr.net/gh/rahul882213/vega-providers-toonworld@main/assets/luxMovies.png",
     "type": "india",
     "disabled": false,
@@ -36,7 +36,7 @@
   {
     "display_name": "BollyFlix",
     "value": "bollyflix",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "icon": "https://cdn.jsdelivr.net/gh/rahul882213/vega-providers-toonworld@main/assets/bollyflix.png",
     "type": "global",
     "disabled": false,
