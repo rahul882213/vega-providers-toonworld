@@ -68,20 +68,50 @@ export async function getStream({
   };
 
   try {
-    let hubcloudUrl = link;
+    let gdirectUrl = "";
     let vegadriveUrl = "";
+    let hubcloudUrl = "";
+    let gdflixUrl = "";
+    let nexdriveUrl = "";
 
     if (link.startsWith("{") && link.endsWith("}")) {
       try {
         const parsed = JSON.parse(link);
+        if (parsed.gdirect) gdirectUrl = normalizeRogLockerUrl(parsed.gdirect);
+        if (parsed.vegadrive) vegadriveUrl = normalizeRogLockerUrl(parsed.vegadrive);
         if (parsed.hubcloud) hubcloudUrl = normalizeRogLockerUrl(parsed.hubcloud);
-        if (parsed.vegadrive) vegadriveUrl = parsed.vegadrive;
+        if (parsed.gdflix) gdflixUrl = normalizeRogLockerUrl(parsed.gdflix);
+        if (parsed.nexdrive) nexdriveUrl = normalizeRogLockerUrl(parsed.nexdrive);
       } catch {}
     } else if (link.includes("vegadrive") || link.includes("one.vegadrive")) {
       vegadriveUrl = link;
-      hubcloudUrl = "";
+    } else if (link.includes("zee-dl") || link.includes("fastdl")) {
+      gdirectUrl = link;
+    } else if (link.includes("gdflix")) {
+      gdflixUrl = link;
+    } else if (/vcloud|zcloud|hubcloud|oxxfile/i.test(link)) {
+      hubcloudUrl = link;
+    } else if (/nexdrive|genxfm|mobilejsr/i.test(link)) {
+      nexdriveUrl = link;
     }
 
+    // 1. Instant (Google CDN) from Zee-DL / FastDL
+    if (gdirectUrl) {
+      try {
+        const s = await extractZeeDl(
+          gdirectUrl,
+          "https://nexdrive.store/",
+          axios,
+          commonHeaders,
+          signal,
+        );
+        if (s) addStream(s);
+      } catch (e: any) {
+        console.log("gdirect error:", e?.message);
+      }
+    }
+
+    // 2. VegaDrive (VegaDrop 10Gbps CDN, Transfer.it, Gofile, Pixeldrain)
     if (vegadriveUrl) {
       try {
         const vdStreams = await vegadriveExtractor(
@@ -97,38 +127,62 @@ export async function getStream({
       }
     }
 
-    if (!hubcloudUrl) {
-      if (streamLinks.length > 0) return streamLinks;
-    }
-    link = hubcloudUrl;
-
-    if (link && (link.includes("zee-dl") || link.includes("fastdl"))) {
-      const s = await extractZeeDl(link, "https://nexdrive.store/", axios, commonHeaders, signal);
-      if (s) addStream(s);
-      if (streamLinks.length > 0) return streamLinks;
-    }
-
-    if (link && link.includes("gdflix")) {
-      const gd = await gdflixExtractor(
-        link,
-        signal,
-        axios,
-        cheerio,
-        commonHeaders,
-        streamLinks.length > 0
-          ? { ...providerContext, openWebView: undefined as any }
-          : providerContext,
-      );
-      if (Array.isArray(gd)) {
-        for (const s of gd) addStream(s);
+    // 3. GDFlix (Direct Server [MGT], Gofile, Pixeldrain)
+    if (gdflixUrl) {
+      try {
+        const gd = await gdflixExtractor(
+          gdflixUrl,
+          signal,
+          axios,
+          cheerio,
+          commonHeaders,
+          streamLinks.length > 0
+            ? { ...providerContext, openWebView: undefined as any }
+            : providerContext,
+        );
+        if (Array.isArray(gd)) {
+          for (const s of gd) addStream(s);
+        }
+      } catch (e: any) {
+        console.log("gdflix error:", e?.message);
       }
-      if (streamLinks.length > 0) return streamLinks;
     }
 
-    if (link && !/vcloud|zcloud|hubcloud|oxxfile/i.test(link)) {
+    // 4. HubCloud (CF Storage, Pixeldrain, GDrive)
+    if (hubcloudUrl && !/mobilejsr|genxfm|nexdrive/i.test(hubcloudUrl)) {
+      try {
+        const hcStreams = await hubcloudExtractor(
+          hubcloudUrl,
+          signal,
+          axios,
+          cheerio,
+          commonHeaders,
+          streamLinks.length > 0
+            ? { ...providerContext, openWebView: undefined as any }
+            : providerContext,
+          isDownload,
+          "luxMovies",
+        );
+        if (Array.isArray(hcStreams)) {
+          for (const s of hcStreams) addStream(s);
+        }
+      } catch (e: any) {
+        console.log("hubcloud error:", e?.message);
+      }
+    }
+
+    // 5. Page resolution for NexDrive / GenXfm / locker intermediate pages
+    const pageToFetch =
+      nexdriveUrl ||
+      (!link.startsWith("{") &&
+      !/vcloud|zcloud|hubcloud|oxxfile|vegadrive|zee-dl|fastdl|gdflix/i.test(link)
+        ? link
+        : "");
+
+    if (pageToFetch) {
       try {
         const dotlinkRes = await fetchRogWithWAF(
-          link,
+          pageToFetch,
           providerContext,
           signal,
         );
@@ -136,7 +190,42 @@ export async function getStream({
           typeof dotlinkRes.data === "string" ? dotlinkRes.data : "";
         const $ = cheerio.load(dotlinkText);
 
-        // 1. V-Drive / VegaDrive (high reliability)
+        // A. Direct locker links right on page
+        $("a[href]").each((_, a) => {
+          const href = $(a).attr("href") || "";
+          if (
+            href.includes("pixeldrain.com/u/") ||
+            href.includes("pixeldrain.com/api/file/")
+          ) {
+            const pxId = href.split("/").pop();
+            if (pxId) {
+              addStream({
+                server: "Pixeldrain",
+                link: `https://pixeldrain.com/api/file/${pxId}`,
+                type: "mp4",
+              });
+            }
+          }
+        });
+
+        // B. FastDL / G-Direct / Zee-DL
+        const gDirectLink = $(
+          "a:contains('G-Direct'), a:contains('Instant'), a[href*='zee-dl'], a[href*='fastdl']",
+        )
+          .first()
+          .attr("href");
+        if (gDirectLink) {
+          const s = await extractZeeDl(
+            gDirectLink,
+            pageToFetch,
+            axios,
+            commonHeaders,
+            signal,
+          );
+          if (s) addStream(s);
+        }
+
+        // C. V-Drive / VegaDrive (high reliability)
         const pageVdLink = $(
           "a:contains('V-Drive'), a:contains('Vega Drive'), a[href*='vegadrive']",
         )
@@ -157,18 +246,7 @@ export async function getStream({
           }
         }
 
-        // 2. FastDL / G-Direct / Zee-DL
-        const gDirectLink = $(
-          "a:contains('G-Direct'), a:contains('Instant'), a[href*='zee-dl'], a[href*='fastdl']",
-        )
-          .first()
-          .attr("href");
-        if (gDirectLink) {
-          const s = await extractZeeDl(gDirectLink, link, axios, commonHeaders, signal);
-          if (s) addStream(s);
-        }
-
-        // 3. GDFlix
+        // D. GDFlix
         const gdLink = $("a[href*='gdflix']").first().attr("href");
         if (gdLink) {
           try {
@@ -186,42 +264,33 @@ export async function getStream({
           } catch {}
         }
 
-        // 4. V-Cloud / Zee-Cloud / HubCloud
+        // E. V-Cloud / Zee-Cloud / HubCloud
         const vcloudAnchor = $(
           "a:contains('V-Cloud'), a:contains('Zee-Cloud'), a:contains('M-Cloud'), a[href*='vcloud'], a[href*='zcloud'], a[href*='hubcloud']",
         ).first();
         const vlink =
           vcloudAnchor.attr("href") ||
           (dotlinkText.match(/<a\s+href="([^"]*cloud\.[^"]*)"/i) || [])[1];
-        if (vlink) {
-          link = vlink;
+        if (vlink && !/mobilejsr|genxfm|nexdrive/i.test(vlink)) {
+          try {
+            const hcStreams = await hubcloudExtractor(
+              vlink,
+              signal,
+              axios,
+              cheerio,
+              commonHeaders,
+              { ...providerContext, openWebView: undefined as any },
+              isDownload,
+              "luxMovies",
+            );
+            if (Array.isArray(hcStreams)) {
+              for (const s of hcStreams) addStream(s);
+            }
+          } catch {}
         }
       } catch (err: any) {
         console.log("dotlink error:", err?.message);
       }
-    }
-
-    if (
-      /hubcloud|vcloud|zcloud|oxxfile/i.test(link) &&
-      !/mobilejsr|genxfm|nexdrive/i.test(link)
-    ) {
-      try {
-        const hcStreams = await hubcloudExtractor(
-          link,
-          signal,
-          axios,
-          cheerio,
-          commonHeaders,
-          streamLinks.length > 0
-            ? { ...providerContext, openWebView: undefined as any }
-            : providerContext,
-          isDownload,
-          "luxMovies",
-        );
-        if (Array.isArray(hcStreams)) {
-          for (const s of hcStreams) addStream(s);
-        }
-      } catch {}
     }
 
     return streamLinks;

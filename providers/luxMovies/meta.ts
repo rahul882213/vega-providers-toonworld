@@ -343,9 +343,20 @@ export const getMeta = async ({
             quality,
           });
         } else {
+          const directLinks: { title: string; link: string; type: "movie" }[] = [];
+          nextP.find("a[href]").each((_: number, a: any) => {
+            const h = normalizeRogLockerUrl($(a).attr("href") || "");
+            const t = $(a).text().trim() || "Movie";
+            if (h && h !== "/" && h !== "#" && !directLinks.some((d) => d.link === h)) {
+              directLinks.push({ title: t, link: h, type: "movie" });
+            }
+          });
+          if (directLinks.length === 0) {
+            directLinks.push({ title: "Movie", link: btnHref, type: "movie" });
+          }
           links.push({
             title: itemTitle,
-            directLinks: [{ title: "Movie", link: btnHref, type: "movie" }],
+            directLinks,
             quality,
           });
         }
@@ -360,6 +371,7 @@ export const getMeta = async ({
         const rawHref = $(a).attr("href") || "";
         const href = normalizeRogLockerUrl(rawHref);
         if (!href || href === "/" || href === "#") return;
+        if (href.includes("/download-") || href.includes("rogmovies.digital") || href.includes("roamovies.cyou")) return;
         const prevText =
           $(a).closest("p, div").prev().text().replace(/\s+/g, " ").trim() ||
           $(a).text().replace(/\s+/g, " ").trim() ||

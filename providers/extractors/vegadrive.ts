@@ -84,20 +84,38 @@ export async function vegadriveExtractor(
             if (prepMatch?.[1] && linkMatch?.[1]) {
               const prepUrl = prepMatch[1].replace(/\\\//g, "/");
               const lUrl = linkMatch[1].replace(/\\\//g, "/");
-              await axios.get(prepUrl, {
-                headers: { ...reqHeaders, Referer: dUrl, Accept: "application/json" },
-              });
-              const linkRes = await axios.get(lUrl, {
-                headers: { ...reqHeaders, Referer: dUrl, Accept: "application/json" },
-              });
-              const linkData =
-                typeof linkRes.data === "string"
-                  ? JSON.parse(linkRes.data)
-                  : linkRes.data;
-              if (linkData?.download_url && typeof linkData.download_url === "string") {
+              try {
+                await axios.get(prepUrl, {
+                  headers: { ...reqHeaders, Referer: dUrl, Accept: "application/json" },
+                });
+              } catch {}
+              let downloadUrl = "";
+              for (let attempt = 0; attempt < 3; attempt++) {
+                if (attempt > 0) {
+                  await new Promise((r) => setTimeout(r, 1000));
+                }
+                try {
+                  const linkRes = await axios.get(lUrl, {
+                    headers: { ...reqHeaders, Referer: dUrl, Accept: "application/json" },
+                  });
+                  const linkData =
+                    typeof linkRes.data === "string"
+                      ? JSON.parse(linkRes.data)
+                      : linkRes.data;
+                  if (
+                    linkData?.download_url &&
+                    typeof linkData.download_url === "string" &&
+                    linkData.download_url.startsWith("http")
+                  ) {
+                    downloadUrl = linkData.download_url;
+                    break;
+                  }
+                } catch {}
+              }
+              if (downloadUrl) {
                 streams.unshift({
                   server: "VegaDrop (10Gbps Google CDN)",
-                  link: linkData.download_url,
+                  link: downloadUrl,
                   type: "mkv",
                 });
               }

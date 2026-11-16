@@ -178,11 +178,18 @@ export const getMeta = async function ({
     const data = res.data;
     const $ = cheerio.load(data);
 
-    const pageTitle = $("h1, .entry-title, .details-title h3, title")
-      .first()
-      .text()
+    const rawHeading =
+      $(".data h3, .details h3, .s-desc h3, .item-desc-title h3, h3").first().text().trim() ||
+      $("img.poster-img").attr("title") ||
+      $("meta[property='og:title']").attr("content") ||
+      $("h1, .entry-title, .details-title h3, title").first().text();
+
+    const pageTitle = rawHeading
+      .replace(/^World4uFree\s*[-–|:]\s*/i, "")
+      .replace(/\s*[-–|:]\s*World4uFree.*$/i, "")
       .replace(/^Download\s+/i, "")
-      .replace(/\s*[-–|]\s*World4uFree.*$/i, "")
+      .replace(/Full HD Movie Download Free/i, "")
+      .replace(/Download Free/i, "")
       .trim();
 
     const hasZetaflixEpisodes = $("ul.episodes-list li").length > 0;

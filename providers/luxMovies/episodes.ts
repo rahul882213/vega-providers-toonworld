@@ -53,18 +53,19 @@ export const getEpisodes = async function ({
           .attr("href");
         const gdflixLink = nextP.find("a[href*='gdflix']").attr("href");
 
+        const sourceMap: Record<string, string> = {};
+        if (gDirectLink) sourceMap.gdirect = normalizeRogLockerUrl(gDirectLink);
+        if (vegadriveLink) sourceMap.vegadrive = normalizeRogLockerUrl(vegadriveLink);
+        if (vcloudLink) sourceMap.hubcloud = normalizeRogLockerUrl(vcloudLink);
+        if (gdflixLink) sourceMap.gdflix = normalizeRogLockerUrl(gdflixLink);
+
         let link = "";
-        if (vcloudLink && vegadriveLink) {
-          link = JSON.stringify({
-            hubcloud: normalizeRogLockerUrl(vcloudLink),
-            vegadrive: vegadriveLink,
-          });
+        if (Object.keys(sourceMap).length > 1) {
+          link = JSON.stringify(sourceMap);
+        } else if (Object.keys(sourceMap).length === 1) {
+          link = Object.values(sourceMap)[0];
         } else {
           link =
-            vegadriveLink ||
-            gDirectLink ||
-            vcloudLink ||
-            gdflixLink ||
             nextP.find(".btn-outline").parent().attr("href") ||
             nextP.find(".btn-outline").attr("href") ||
             nextP.find("a[href]").first().attr("href") ||

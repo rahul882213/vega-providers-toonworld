@@ -506,13 +506,6 @@ export const getStream = async function ({
       }
     }
 
-    if (type === "movie") {
-      const linkRes = await axios.get(url, { headers });
-      const linkData = linkRes.data;
-      const $ = cheerio.load(linkData);
-      url = $('strong:contains("INSTANT")').parent().attr("href") || url;
-    }
-
     return [];
   } catch (err) {
     throwProviderError("World4u", "stream", err);
