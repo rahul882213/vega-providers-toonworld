@@ -1,4 +1,60 @@
 import { Stream, ProviderContext } from "../types";
+import { gofileExtractor } from "./gofile";
+
+const DEFAULT_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+async function isPlayableMediaUrl(
+  url: string,
+  axios: any,
+  headers: Record<string, string>,
+  isDownload?: boolean,
+): Promise<boolean> {
+  if (!url || !url.startsWith("http")) return false;
+  if (!isDownload && /\.(zip|rar|7z)(\?|$)/i.test(url)) return false;
+  try {
+    const res = await axios.get(url, {
+      headers: { ...headers, Range: "bytes=0-31" },
+      responseType: "stream",
+      timeout: 5000,
+      maxRedirects: 4,
+      validateStatus: () => true,
+    });
+    if (res?.data && typeof res.data.destroy === "function") {
+      try {
+        res.data.destroy();
+      } catch {}
+    }
+    const ct = String(res?.headers?.["content-type"] || "").toLowerCase();
+    const cd = String(res?.headers?.["content-disposition"] || "").toLowerCase();
+    if (!isDownload && (ct.includes("zip") || cd.includes(".zip"))) {
+      return false;
+    }
+    if ((res.status === 200 || res.status === 206) && !ct.includes("text/html")) {
+      return true;
+    }
+    // Some Google CDN links reject Range with 400; retry without Range
+    if (res.status === 400 && /googleusercontent|googlevideo/i.test(url)) {
+      const res2 = await axios.get(url, {
+        headers,
+        responseType: "stream",
+        timeout: 5000,
+        maxRedirects: 4,
+        validateStatus: () => true,
+      });
+      if (res2?.data && typeof res2.data.destroy === "function") {
+        try {
+          res2.data.destroy();
+        } catch {}
+      }
+      const ct2 = String(res2?.headers?.["content-type"] || "").toLowerCase();
+      return (res2.status === 200 || res2.status === 206) && !ct2.includes("text/html");
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 export async function gdflixExtractor(
   link: string,
@@ -7,10 +63,12 @@ export async function gdflixExtractor(
   cheerio: any,
   headers: Record<string, string>,
   providerContext?: ProviderContext,
+  isDownload?: boolean,
 ) {
   try {
     let wafCookies = "";
     let initialRes: any = null;
+
     try {
       initialRes = await axios.get(link, { headers, signal, timeout: 12000 });
     } catch (error: any) {
@@ -28,8 +86,7 @@ export async function gdflixExtractor(
             waitForCookie: "cf_clearance",
           });
           wafCookies = wafResult?.cookies || "";
-        } catch (wafErr) {
-          // User cancelled WAF dialog or WebView unavailable
+        } catch {
           return [];
         }
       } else {
@@ -43,7 +100,9 @@ export async function gdflixExtractor(
 
     const streamLinks: Stream[] = [];
     const addStream = (s: Stream) => {
-      if (s.link && !streamLinks.some((ex) => ex.link === s.link)) {
+      if (!s.link) return;
+      if (!isDownload && /\.(zip|rar|7z)(\?|$)/i.test(s.link)) return;
+      if (!streamLinks.some((ex) => ex.link === s.link)) {
         streamLinks.push(s);
       }
     };
@@ -73,7 +132,91 @@ export async function gdflixExtractor(
 
     const baseUrl = currentUrl.split("/").slice(0, 3).join("/");
 
-    // 1. Instant DL / Quick Download
+    // 1. DIRECT SERVER [MGT] / indexserver direct .mkv / .mp4 links (fastest, direct 206 video/x-matroska)
+    try {
+      const directEls = $drive(
+        "a:contains('DIRECT SERVER'), a:contains('Direct Server'), a[href*='indexserver'], a[href*='GDFS']",
+      ).get();
+      for (const el of directEls) {
+        const rawHref = $drive(el).attr("href") || "";
+        if (!rawHref || rawHref.startsWith("#")) continue;
+        const fullDirect = rawHref.startsWith("http")
+          ? rawHref
+          : new URL(rawHref, currentUrl).href;
+        if (!isDownload && /\.(zip|rar|7z)(\?|$)/i.test(fullDirect)) continue;
+        if (await isPlayableMediaUrl(fullDirect, axios, headers, isDownload)) {
+          const ext = fullDirect.includes(".mp4") ? "mp4" : "mkv";
+          addStream({
+            server: "Direct Server [MGT]",
+            link: fullDirect,
+            type: ext,
+          });
+        }
+      }
+    } catch {}
+
+    // 2. GoFile [Multiup] / Gofile direct mirror
+    try {
+      const gfAnchorHref =
+        $drive(
+          "a:contains('GoFile'), a:contains('Gofile'), a[href*='goflix.'], a[href*='gofile.io/d/']",
+        )
+          .first()
+          .attr("href") || "";
+      if (gfAnchorHref) {
+        const fullGfHref = gfAnchorHref.startsWith("http")
+          ? gfAnchorHref
+          : new URL(gfAnchorHref, currentUrl).href;
+        let gofileId = fullGfHref.match(/gofile\.io\/d\/([a-zA-Z0-9]+)/i)?.[1] || "";
+        if (!gofileId && /goflix\.|multiup/i.test(fullGfHref)) {
+          const mirrorRes = await axios.get(fullGfHref, {
+            headers: { ...headers, Referer: currentUrl },
+            signal,
+            timeout: 7000,
+          });
+          const $mirror = cheerio.load(mirrorRes.data || "");
+          const innerGf = $mirror("a[href*='gofile.io/d/']").first().attr("href") || "";
+          gofileId = innerGf.match(/gofile\.io\/d\/([a-zA-Z0-9]+)/i)?.[1] || "";
+        }
+        if (gofileId) {
+          const gfStream = await gofileExtractor(gofileId, axios, providerContext);
+          if (gfStream?.link) {
+            addStream({
+              server: "Gofile",
+              link: gfStream.link,
+              type: gfStream.link.includes(".mp4") ? "mp4" : "mkv",
+              headers: {
+                "User-Agent": headers["User-Agent"] || DEFAULT_UA,
+                Referer: "https://gofile.io/",
+                Cookie: `accountToken=${gfStream.token}`,
+              },
+            });
+          }
+        }
+      }
+    } catch {}
+
+    // 3. Pixeldrain mirror if present
+    try {
+      const pxHref =
+        $drive("a:contains('Pixeldrain'), a:contains('PixelDrain'), a[href*='pixeldrain']")
+          .first()
+          .attr("href") || "";
+      if (pxHref) {
+        const pxId =
+          pxHref.match(/\/u\/([a-zA-Z0-9_-]+)/)?.[1] ||
+          pxHref.match(/\/file\/([a-zA-Z0-9_-]+)/)?.[1];
+        if (pxId) {
+          addStream({
+            server: "Pixeldrain",
+            link: `https://pixeldrain.com/api/file/${pxId}`,
+            type: "mkv",
+          });
+        }
+      }
+    } catch {}
+
+    // 4. Instant DL / Quick Download (resolve redirect & verify playable media)
     try {
       const seed =
         $drive(
@@ -87,44 +230,44 @@ export async function gdflixExtractor(
           ? seed
           : baseUrl + (seed.startsWith("/") ? "" : "/") + seed;
 
+        let candidateGoogleUrl = "";
         if (fullSeed.includes("url=")) {
-          const directPart = decodeURIComponent(fullSeed.split("url=")[1].split("&")[0]);
-          if (directPart && directPart.startsWith("http")) {
-            addStream({ server: "Instant Download", link: directPart, type: "mkv" });
-          }
-        } else if (
-          /\.(mp4|mkv|m3u8)(\?|$)/i.test(fullSeed) ||
-          /instadl|workers\.dev|googleusercontent\.com|r2\.cloudflarestorage/i.test(fullSeed) ||
-          fullSeed.includes("?bytes=")
-        ) {
-          addStream({ server: "Instant Download", link: fullSeed, type: "mkv" });
-        } else {
+          candidateGoogleUrl = decodeURIComponent(fullSeed.split("url=")[1].split("&")[0]);
+        } else if (/instadl|fastdl/i.test(fullSeed) || !/\.(mp4|mkv|m3u8)(\?|$)/i.test(fullSeed)) {
           try {
             const vRes = await axios.get(fullSeed, {
               headers: { ...headers, Referer: currentUrl },
               maxRedirects: 0,
               validateStatus: (s: number) => s >= 200 && s < 400,
               signal,
-              timeout: 10000,
+              timeout: 7000,
             });
-            const loc = vRes.headers?.location;
-            if (loc) {
-              let directGoogleUrl: string | null = null;
-              if (loc.includes("url=")) {
-                directGoogleUrl = decodeURIComponent(loc.split("url=")[1].split("&")[0]);
-              } else if (loc.startsWith("http")) {
-                directGoogleUrl = loc;
-              }
-              if (directGoogleUrl && directGoogleUrl.startsWith("http")) {
-                addStream({ server: "Instant Download", link: directGoogleUrl, type: "mkv" });
-              }
+            const loc = vRes.headers?.location || vRes.headers?.Location || "";
+            if (loc.includes("url=")) {
+              candidateGoogleUrl = decodeURIComponent(loc.split("url=")[1].split("&")[0]);
+            } else if (loc.startsWith("http") && !/pages\.dev|fastdl/i.test(loc)) {
+              candidateGoogleUrl = loc;
             }
           } catch {}
+        } else {
+          candidateGoogleUrl = fullSeed;
+        }
+
+        if (
+          candidateGoogleUrl &&
+          candidateGoogleUrl.startsWith("http") &&
+          (await isPlayableMediaUrl(candidateGoogleUrl, axios, headers, isDownload))
+        ) {
+          addStream({
+            server: "Instant Download",
+            link: candidateGoogleUrl,
+            type: candidateGoogleUrl.includes(".mp4") ? "mp4" : "mkv",
+          });
         }
       }
     } catch {}
 
-    // 2. Fast Cloud / ZipDisk / Cloud Resume
+    // 5. Fast Cloud / ZipDisk / Cloud Resume (exclude .zip archives for video playback)
     try {
       const resumeDrive =
         $drive(
@@ -162,7 +305,10 @@ export async function gdflixExtractor(
               },
             );
             const resumeBotDownloadData = await resumeBotDownload.json();
-            if (resumeBotDownloadData?.url) {
+            if (
+              resumeBotDownloadData?.url &&
+              (isDownload || !/\.(zip|rar|7z)(\?|$)/i.test(resumeBotDownloadData.url))
+            ) {
               addStream({
                 server: "ResumeBot",
                 link: resumeBotDownloadData.url,
@@ -186,18 +332,20 @@ export async function gdflixExtractor(
             const fullResumeLink = resumeLink.startsWith("http")
               ? resumeLink
               : baseUrl + (resumeLink.startsWith("/") ? "" : "/") + resumeLink;
-            addStream({
-              server: "ResumeCloud",
-              link: fullResumeLink,
-              type: "mkv",
-            });
+            if (isDownload || !/\.(zip|rar|7z)(\?|$)/i.test(fullResumeLink)) {
+              addStream({
+                server: "ResumeCloud",
+                link: fullResumeLink,
+                type: "mkv",
+              });
+            }
           }
         }
       }
     } catch {}
 
     return streamLinks;
-  } catch (error) {
+  } catch {
     return [];
   }
 }

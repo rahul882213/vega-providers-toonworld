@@ -54,8 +54,8 @@ export const unlockLinksmod = async function (
   commonHeaders: Record<string, string>,
   providerContext?: ProviderContext,
   signal?: AbortSignal,
-): Promise<{ server: string; link: string; type: string }[]> {
-  const extracted: { server: string; link: string; type: string }[] = [];
+): Promise<{ server: string; link: string; type: string; headers?: Record<string, string> }[]> {
+  const extracted: { server: string; link: string; type: string; headers?: Record<string, string> }[] = [];
 
   try {
     const res1 = await axios.get(url, {
@@ -120,7 +120,12 @@ export const unlockLinksmod = async function (
               extracted.push({
                 server: "Gofile Direct",
                 link: gfResult.link,
-                type: "mkv",
+                type: gfResult.link.includes(".mp4") ? "mp4" : "mkv",
+                headers: {
+                  "User-Agent": commonHeaders?.["User-Agent"] || defaultHeaders["User-Agent"],
+                  Referer: "https://gofile.io/",
+                  Cookie: `accountToken=${gfResult.token}`,
+                },
               });
               continue;
             }
@@ -293,13 +298,19 @@ export const getStream = async function ({
     // 2. LinksMod Resolver (Direct Locker links)
     if (targetUrl.includes("linksmod.top")) {
       const unlocked = await unlockLinksmod(targetUrl, axios, cheerio, commonHeaders, providerContext, signal);
+      const hasDirectVideo = unlocked.some(
+        (u) => u.type === "mkv" || u.type === "mp4" || u.type === "m3u8",
+      );
       for (const u of unlocked) {
+        if (!isDownload && hasDirectVideo && u.type === "iframe") {
+          continue;
+        }
         addStream({
           server: u.server,
           link: u.link,
           type: u.type,
           quality: "720",
-          headers: {
+          headers: u.headers || {
             Referer: targetUrl,
             "User-Agent": commonHeaders["User-Agent"] || defaultHeaders["User-Agent"],
           },
@@ -429,6 +440,7 @@ export const getStream = async function ({
                 Referer: targetUrl,
               },
               providerContext,
+              isDownload,
             );
             if (Array.isArray(gdStreams)) {
               for (const s of gdStreams) addStream(s);
@@ -527,6 +539,7 @@ export const getStream = async function ({
             Referer: targetUrl,
           },
           providerContext,
+          isDownload,
         );
         if (Array.isArray(gdStreams)) {
           for (const s of gdStreams) addStream(s);
