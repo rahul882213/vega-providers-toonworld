@@ -1,8 +1,48 @@
 import { ProviderContext, Stream } from "../types";
 import { hubcloudExtractor } from "../extractors/hubcloud";
 import { vegadriveExtractor } from "../extractors/vegadrive";
+import { gdflixExtractor } from "../extractors/gdflix";
 import { throwProviderError } from "../providerErrors";
 import { fetchRogWithWAF, normalizeRogLockerUrl } from "./posts";
+
+async function extractZeeDl(
+  gDirectLink: string,
+  referer: string,
+  axios: any,
+  commonHeaders: Record<string, string>,
+  signal: AbortSignal,
+): Promise<Stream | null> {
+  try {
+    const fastdlRes = await axios.get(gDirectLink, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        ...commonHeaders,
+        Referer: referer,
+      },
+      signal,
+      timeout: 10000,
+    });
+    const m = String(fastdlRes.data || "").match(
+      /reurl\s*=\s*["']([^"']+)["']/,
+    );
+    if (m?.[1]) {
+      const targetUrl = m[1].includes("link=")
+        ? decodeURIComponent(m[1].split("link=")[1])
+        : m[1];
+      if (targetUrl.startsWith("http")) {
+        return {
+          server: "Instant (Google CDN)",
+          link: targetUrl,
+          type: "mkv",
+        };
+      }
+    }
+  } catch (e: any) {
+    console.log("FastDL error:", e?.message);
+  }
+  return null;
+}
 
 export async function getStream({
   link: rawLink,
@@ -62,7 +102,30 @@ export async function getStream({
     }
     link = hubcloudUrl;
 
-    if (!link.includes("cloud")) {
+    if (link && (link.includes("zee-dl") || link.includes("fastdl"))) {
+      const s = await extractZeeDl(link, "https://nexdrive.store/", axios, commonHeaders, signal);
+      if (s) addStream(s);
+      if (streamLinks.length > 0) return streamLinks;
+    }
+
+    if (link && link.includes("gdflix")) {
+      const gd = await gdflixExtractor(
+        link,
+        signal,
+        axios,
+        cheerio,
+        commonHeaders,
+        streamLinks.length > 0
+          ? { ...providerContext, openWebView: undefined as any }
+          : providerContext,
+      );
+      if (Array.isArray(gd)) {
+        for (const s of gd) addStream(s);
+      }
+      if (streamLinks.length > 0) return streamLinks;
+    }
+
+    if (link && !/vcloud|zcloud|hubcloud|oxxfile/i.test(link)) {
       try {
         const dotlinkRes = await fetchRogWithWAF(
           link,
@@ -73,45 +136,7 @@ export async function getStream({
           typeof dotlinkRes.data === "string" ? dotlinkRes.data : "";
         const $ = cheerio.load(dotlinkText);
 
-        // 1. FastDL / G-Direct / Zee-DL (Instant Google CDN stream)
-        const gDirectLink = $(
-          "a:contains('G-Direct'), a:contains('Instant'), a[href*='zee-dl'], a[href*='fastdl']",
-        )
-          .first()
-          .attr("href");
-        if (gDirectLink) {
-          try {
-            const fastdlRes = await axios.get(gDirectLink, {
-              headers: {
-                "User-Agent":
-                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                ...commonHeaders,
-                Referer: link,
-              },
-              signal,
-              timeout: 10000,
-            });
-            const m = String(fastdlRes.data || "").match(
-              /reurl\s*=\s*["']([^"']+)["']/,
-            );
-            if (m?.[1]) {
-              const targetUrl = m[1].includes("link=")
-                ? decodeURIComponent(m[1].split("link=")[1])
-                : m[1];
-              if (targetUrl.startsWith("http")) {
-                addStream({
-                  server: "Instant (Google CDN)",
-                  link: targetUrl,
-                  type: "mkv",
-                });
-              }
-            }
-          } catch (e: any) {
-            console.log("FastDL error:", e?.message);
-          }
-        }
-
-        // 2. V-Drive / VegaDrive
+        // 1. V-Drive / VegaDrive (high reliability)
         const pageVdLink = $(
           "a:contains('V-Drive'), a:contains('Vega Drive'), a[href*='vegadrive']",
         )
@@ -132,7 +157,36 @@ export async function getStream({
           }
         }
 
-        // 3. V-Cloud / Zee-Cloud / HubCloud
+        // 2. FastDL / G-Direct / Zee-DL
+        const gDirectLink = $(
+          "a:contains('G-Direct'), a:contains('Instant'), a[href*='zee-dl'], a[href*='fastdl']",
+        )
+          .first()
+          .attr("href");
+        if (gDirectLink) {
+          const s = await extractZeeDl(gDirectLink, link, axios, commonHeaders, signal);
+          if (s) addStream(s);
+        }
+
+        // 3. GDFlix
+        const gdLink = $("a[href*='gdflix']").first().attr("href");
+        if (gdLink) {
+          try {
+            const gd = await gdflixExtractor(
+              gdLink,
+              signal,
+              axios,
+              cheerio,
+              commonHeaders,
+              { ...providerContext, openWebView: undefined as any },
+            );
+            if (Array.isArray(gd)) {
+              for (const s of gd) addStream(s);
+            }
+          } catch {}
+        }
+
+        // 4. V-Cloud / Zee-Cloud / HubCloud
         const vcloudAnchor = $(
           "a:contains('V-Cloud'), a:contains('Zee-Cloud'), a:contains('M-Cloud'), a[href*='vcloud'], a[href*='zcloud'], a[href*='hubcloud']",
         ).first();

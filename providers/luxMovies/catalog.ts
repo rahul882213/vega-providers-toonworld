@@ -5,7 +5,7 @@ export const catalog = [
   },
   {
     title: "Netflix",
-    filter: "web-series/netflix",
+    filter: "category/web-series/netflix",
   },
   {
     title: "Amazon Prime",
@@ -20,82 +20,54 @@ export const catalog = [
 export const genres = [
   {
     title: "Action",
-    filter: "category/movies-by-genres/action/",
+    filter: "category/action/",
   },
   {
     title: "Adventure",
-    filter: "category/movies-by-genres/adventure/",
+    filter: "category/adventure/",
   },
   {
     title: "Animation",
-    filter: "category/movies-by-genres/animation/",
-  },
-  {
-    title: "Biography",
-    filter: "category/movies-by-genres/biography/",
+    filter: "category/animation/",
   },
   {
     title: "Comedy",
-    filter: "category/movies-by-genres/comedy/",
+    filter: "category/comedy/",
   },
   {
     title: "Crime",
-    filter: "category/movies-by-genres/crime/",
-  },
-  {
-    title: "Documentary",
-    filter: "category/movies-by-genres/documentary/",
+    filter: "category/crime/",
   },
   {
     title: "Drama",
-    filter: "category/movies-by-genres/drama/",
+    filter: "category/drama/",
   },
   {
-    title: "Family",
-    filter: "category/movies-by-genres/family/",
+    title: "Dual Audio",
+    filter: "category/dual-audio/",
   },
   {
-    title: "Fantasy",
-    filter: "category/movies-by-genres/fantasy/",
+    title: "Bollywood",
+    filter: "category/bollywood/",
   },
   {
-    title: "History",
-    filter: "category/movies-by-genres/history/",
+    title: "Hollywood",
+    filter: "category/hollywood/",
   },
   {
     title: "Horror",
-    filter: "category/movies-by-genres/horror/",
-  },
-  {
-    title: "Music",
-    filter: "category/movies-by-genres/music/",
+    filter: "category/horror/",
   },
   {
     title: "Mystery",
-    filter: "category/movies-by-genres/mystery/",
+    filter: "category/mystery/",
   },
   {
     title: "Romance",
-    filter: "category/movies-by-genres/romance/",
-  },
-  {
-    title: "Sci-Fi",
-    filter: "category/movies-by-genres/sci-fi/",
-  },
-  {
-    title: "Sport",
-    filter: "category/movies-by-genres/sport/",
+    filter: "category/romance/",
   },
   {
     title: "Thriller",
-    filter: "category/movies-by-genres/thriller/",
-  },
-  {
-    title: "War",
-    filter: "category/movies-by-genres/war/",
-  },
-  {
-    title: "Western",
-    filter: "category/movies-by-genres/western/",
+    filter: "category/thriller/",
   },
 ];

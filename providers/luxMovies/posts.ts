@@ -35,10 +35,24 @@ const wafSessionCache = new Map<
 
 export function normalizeRogLockerUrl(rawUrl: string): string {
   if (!rawUrl || typeof rawUrl !== "string") return rawUrl;
-  return rawUrl.replace(
+  let normalized = rawUrl.trim().replace(
     /^https?:\/\/(?:www\.)?mobilejsr\.(?:best|com|org|net|xyz|top|live|in)\//i,
     "https://nexdrive.store/",
   );
+  // Collapse accidental double slashes in path (e.g. https://nexdrive.store/genxfm...//)
+  normalized = normalized.replace(/^(https?:\/\/[^/#?]+)(.*)$/i, (_, origin, rest) => {
+    return origin + rest.replace(/\/{2,}/g, "/");
+  });
+  return normalized;
+}
+
+export function cleanPosterUrl(raw: string | undefined, baseUrl: string): string {
+  if (!raw) return "";
+  const val = raw.trim();
+  if (!val || val.startsWith("data:")) return "";
+  if (val.startsWith("//")) return `https:${val}`;
+  if (val.startsWith("/")) return `${baseUrl.replace(/\/+$/, "")}${val}`;
+  return val;
 }
 
 export async function getRogMoviesBaseUrl(): Promise<string> {
@@ -70,14 +84,15 @@ async function tryFetchFromUnblockedMirrors(
   axios: any,
   reqHeaders: Record<string, string>,
   signal?: AbortSignal,
-): Promise<{ data: any; status: number } | null> {
+): Promise<{ data: any; status: number; resolvedUrl: string } | null> {
   try {
     const u = new URL(rawUrl);
-    if (!/rogmovies|roamovies|vegamovies/i.test(u.hostname)) {
+    if (!/rogmovies|roamovies|vegamovies|zeefliz/i.test(u.hostname)) {
       return null;
     }
 
     for (const mirror of UNBLOCKED_ROG_MIRRORS) {
+      if (mirror.includes(u.hostname)) continue;
       try {
         let targetPath = u.pathname + u.search;
         if (u.pathname === "/search.php") {
@@ -88,17 +103,25 @@ async function tryFetchFromUnblockedMirrors(
               ? `/page/${p}/?s=${encodeURIComponent(q)}`
               : `/?s=${encodeURIComponent(q)}`;
         }
-        const mirrorUrl = `${mirror}${targetPath}`;
-        const mRes = await axios.get(mirrorUrl, {
-          headers: { ...reqHeaders, Referer: `${mirror}/` },
-          signal,
-          timeout: 10000,
-        });
-        if (
-          mRes?.data &&
-          (typeof mRes.data !== "string" || !isWafChallenge(mRes.data))
-        ) {
-          return { data: mRes.data, status: mRes.status || 200 };
+        const candidatePaths = [targetPath];
+        if (!targetPath.startsWith("/category/") && targetPath !== "/" && !targetPath.includes("?s=") && !targetPath.startsWith("/page/")) {
+          candidatePaths.push(`/category${targetPath}`);
+        }
+        for (const p of candidatePaths) {
+          try {
+            const mirrorUrl = `${mirror}${p}`;
+            const mRes = await axios.get(mirrorUrl, {
+              headers: { ...reqHeaders, Referer: `${mirror}/` },
+              signal,
+              timeout: 10000,
+            });
+            if (
+              mRes?.data &&
+              (typeof mRes.data !== "string" || !isWafChallenge(mRes.data))
+            ) {
+              return { data: mRes.data, status: mRes.status || 200, resolvedUrl: mirrorUrl };
+            }
+          } catch {}
         }
       } catch {}
     }
@@ -111,7 +134,7 @@ export async function fetchRogWithWAF(
   providerContext: ProviderContext,
   signal?: AbortSignal,
   extraHeaders?: Record<string, string>,
-): Promise<{ data: any; status: number }> {
+): Promise<{ data: any; status: number; resolvedUrl?: string }> {
   const url = normalizeRogLockerUrl(rawUrl);
   const { axios, commonHeaders, openWebView, kvStore } = providerContext;
   const origin = url.split("/").slice(0, 3).join("/");
@@ -155,7 +178,7 @@ export async function fetchRogWithWAF(
     ) {
       throw { response: { status: 403 } };
     }
-    return { data: res.data, status: res.status || 200 };
+    return { data: res.data, status: res.status || 200, resolvedUrl: url };
   } catch (error: any) {
     // 1. Before opening WebView, try unblocked RogMovies sister mirrors (zeefliz1.xyz / one.1cinevood.baby)
     const mirrorResult = await tryFetchFromUnblockedMirrors(
@@ -177,7 +200,7 @@ export async function fetchRogWithWAF(
           signal,
         });
         if (typeof nexRes?.data === "string" && !isWafChallenge(nexRes.data)) {
-          return { data: nexRes.data, status: nexRes.status || 200 };
+          return { data: nexRes.data, status: nexRes.status || 200, resolvedUrl: nexUrl };
         }
       } catch {}
     }
@@ -227,7 +250,7 @@ export async function fetchRogWithWAF(
               parsedData = JSON.parse(parsedData);
             } catch {}
           }
-          return { data: parsedData, status: 200 };
+          return { data: parsedData, status: 200, resolvedUrl: wafResult.url || url };
         }
 
         const retryHeaders: Record<string, string> = {
@@ -246,7 +269,7 @@ export async function fetchRogWithWAF(
           headers: retryHeaders,
           signal,
         });
-        return { data: retryRes.data, status: retryRes.status || 200 };
+        return { data: retryRes.data, status: retryRes.status || 200, resolvedUrl: wafResult?.url || url };
       } catch (wafErr) {
         console.warn("RogMovies openWebView WAF solver failed:", wafErr);
       }
@@ -261,6 +284,24 @@ export function parsePostsFromHtml(
 ): Post[] {
   const posts: Post[] = [];
   const seen = new Set<string>();
+
+  const extractImg = (root: any): string => {
+    const imgs = root.find("img");
+    for (let i = 0; i < imgs.length; i++) {
+      const img = $(imgs[i]);
+      const candidates = [
+        img.attr("data-lazy-src"),
+        img.attr("data-src"),
+        img.attr("data-original"),
+        img.attr("src"),
+      ];
+      for (const c of candidates) {
+        const cleaned = cleanPosterUrl(c, baseUrl);
+        if (cleaned) return cleaned;
+      }
+    }
+    return "";
+  };
 
   $(".blog-items,.post-list,#archive-container,.movies-grid")
     ?.children("article,.entry-list-item,a")
@@ -298,16 +339,7 @@ export function parsePostsFromHtml(
         ""
       ).trim();
 
-      let image =
-        $(element).find("a").find("img").attr("data-lazy-src") ||
-        $(element).find("a").find("img").attr("data-src") ||
-        $(element).find("a").find("img").attr("src") ||
-        $(element).find("img").attr("data-src") ||
-        $(element).find("img").attr("src") ||
-        "";
-      if (image.startsWith("//")) {
-        image = "https:" + image;
-      }
+      const image = extractImg($(element));
 
       if (title) {
         seen.add(link);
@@ -338,12 +370,7 @@ export function parsePostsFromHtml(
         .replace(/\s{2,}/g, " ")
         .trim();
 
-      let image =
-        card.find("img").first().attr("data-lazy-src") ||
-        card.find("img").first().attr("data-src") ||
-        card.find("img").first().attr("src") ||
-        "";
-      if (image.startsWith("//")) image = "https:" + image;
+      const image = extractImg(card);
 
       if (title) {
         seen.add(link);
@@ -377,7 +404,15 @@ export const getPosts = async ({
     : page > 1
       ? `${baseUrl}/page/${page}/`
       : `${baseUrl}/`;
-  return posts(baseUrl, url, signal, providerContext);
+  const result = await posts(baseUrl, url, signal, providerContext);
+  if (result.length === 0 && cleanFilter && !cleanFilter.startsWith("category/")) {
+    const catUrl =
+      page > 1
+        ? `${baseUrl}/category/${cleanFilter}/page/${page}/`
+        : `${baseUrl}/category/${cleanFilter}/`;
+    return posts(baseUrl, catUrl, signal, providerContext);
+  }
+  return result;
 };
 
 export const getSearchPosts = async ({
@@ -393,7 +428,7 @@ export const getSearchPosts = async ({
   signal: AbortSignal;
   providerContext: ProviderContext;
 }): Promise<Post[]> => {
-  const { axios, cheerio, commonHeaders } = providerContext;
+  const { cheerio } = providerContext;
   const baseUrl = await getRogMoviesBaseUrl();
   const cleanQuery = (searchQuery || "").trim();
   if (!cleanQuery) return [];
@@ -416,7 +451,7 @@ export const getSearchPosts = async ({
           .replace(/^Download\s+/i, "")
           .trim(),
         link: `${postUrl.pathname}${postUrl.search}${postUrl.hash}`,
-        image: doc.post_thumbnail || doc.image || "",
+        image: cleanPosterUrl(doc.post_thumbnail || doc.image || "", baseUrl),
         tag,
       });
     }
