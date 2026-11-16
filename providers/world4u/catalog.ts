@@ -4,24 +4,25 @@ export const catalog = [
     filter: "",
   },
   {
-    title: "Hollywood",
-    filter: "/category/hollywood",
+    title: "Movies",
+    filter: "/movies",
   },
   {
-    title: "Bollywood",
-    filter: "/category/bollywood",
+    title: "TV Shows",
+    filter: "/tvshows",
   },
   {
-    title: "Web Series",
-    filter: "/category/web-series",
+    title: "Trending",
+    filter: "/trending",
   },
 ];
 
 export const genres = [
-  { title: "South", filter: "/category/hindi-dubbed-movies/south-indian" },
-  { title: "Punjabi", filter: "/category/punjabi" },
-  { title: "Marathi", filter: "/category/bollywood/marathi" },
-  { title: "Gujarati", filter: "/category/gujarati" },
-  { title: "Bollywood", filter: "/category/bollywood" },
-  { title: "Hollywood", filter: "/category/hollywood" },
+  { title: "Action", filter: "/genre/action" },
+  { title: "Adventure", filter: "/genre/adventure" },
+  { title: "Comedy", filter: "/genre/comedy" },
+  { title: "Crime", filter: "/genre/crime" },
+  { title: "Drama", filter: "/genre/drama" },
+  { title: "Sci-Fi & Fantasy", filter: "/genre/sci-fi-fantasy" },
+  { title: "Thriller", filter: "/genre/thriller" },
 ];

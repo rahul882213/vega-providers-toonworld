@@ -1,18 +1,34 @@
 {
+  "1cinevood": {
+    "name": "1cinevood",
+    "url": "https://one.1cinevood.baby"
+  },
+  "cinevood": {
+    "name": "Cinevood",
+    "url": "https://one.1cinevood.baby"
+  },
   "w4u": {
     "name": "world4ufree",
-    "url": "https://world4ufree.vu"
+    "url": "https://world4ufree.co.in"
   },
-  "1cinevood": {
-    "name": "cinewood",
-    "url": "https://one.cinevood.business"
+  "world4u": {
+    "name": "world4ufree",
+    "url": "https://world4ufree.co.in"
+  },
+  "lux": {
+    "name": "luxmovies",
+    "url": "https://rogmovies.digital"
+  },
+  "luxMovies": {
+    "name": "luxmovies",
+    "url": "https://rogmovies.digital"
   },
   "bollyflix": {
-    "name": "BollyFlix",
-    "url": "https://new1.bollyflix.tours"
+    "name": "bollyflix",
+    "url": "https://bollyflix.church"
   },
   "toonworld4all": {
-    "name": "ToonWorld4All",
+    "name": "toonworld4all",
     "url": "https://toonworld4all.me"
   }
 }

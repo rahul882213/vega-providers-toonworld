@@ -1,31 +1,325 @@
-import { Stream, ProviderContext } from "../types";
+import { ProviderContext, Stream } from "../types";
 import { throwProviderError } from "../providerErrors";
+import { extractCinejoyStreams } from "../extractors/cinejoy";
+import { extractMovyStreams } from "../extractors/movy";
+import { extractVidstuckStreams } from "../extractors/vidstuck";
+import { hubcloudExtractor } from "../extractors/hubcloud";
+import { gdflixExtractor } from "../extractors/gdflix";
+import { lookupTmdbByTitleAndPoster, readW4uMeta, W4uStreamMeta } from "./meta";
+import { getWorld4uBaseUrl } from "./posts";
+
+const defaultHeaders: Record<string, string> = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  Accept:
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+};
+
+async function resolveZetaflixStreams({
+  pageUrl,
+  meta,
+  type,
+  signal,
+  providerContext,
+}: {
+  pageUrl: string;
+  meta: W4uStreamMeta;
+  type: string;
+  signal: AbortSignal;
+  providerContext: ProviderContext;
+}): Promise<Stream[]> {
+  const { axios, cheerio, commonHeaders } = providerContext;
+  const baseUrl = await getWorld4uBaseUrl();
+  const streams: Stream[] = [];
+
+  let html = "";
+  try {
+    const res = await axios.get(pageUrl, {
+      signal,
+      headers: {
+        ...defaultHeaders,
+        ...commonHeaders,
+        Referer: `${baseUrl}/`,
+      },
+      timeout: 10000,
+    });
+    html = typeof res.data === "string" ? res.data : "";
+  } catch {}
+
+  const $ = html ? cheerio.load(html) : null;
+
+  let title = meta.title || "";
+  let year = meta.year || "";
+  let posterFile = meta.posterFile || "";
+  let season = Number(meta.season || 1);
+  let episode = Number(meta.episode || 1);
+  const effectiveType: "movie" | "series" =
+    meta.type === "series" ||
+    type === "series" ||
+    /\/episodes\/|\/tvshows\//i.test(pageUrl)
+      ? "series"
+      : "movie";
+
+  const epSlugMatch = pageUrl.match(/[-/](\d+)x(\d+)\/?$/i);
+  if (epSlugMatch) {
+    season = Number(epSlugMatch[1]) || season;
+    episode = Number(epSlugMatch[2]) || episode;
+  }
+
+  if ($) {
+    if (!title) {
+      const serieText = $(".details-info, .info-col")
+        .text()
+        .match(/Serie:\s*([^\n\r]+)/i)?.[1];
+      title = (
+        serieText ||
+        $(".details-title h3, .details-title h1, h1")
+          .first()
+          .text()
+          .replace(/:\s*\d+\s*[x×]\s*\d+.*$/i, "")
+      ).trim();
+    }
+    if (!year) {
+      year =
+        $(".details-info, .info-col")
+          .text()
+          .match(/Year:\s*(\d{4})/i)?.[1] || "";
+    }
+    if (!posterFile) {
+      const posterSrc =
+        $(".content-poster img").attr("src") ||
+        $("meta[property='og:image']").attr("content") ||
+        "";
+      posterFile = posterSrc.split("/").pop()?.split("?")[0] || "";
+    }
+
+    // 1. Check Zetaflix player options (excluding "fake")
+    const playerOptions = $(
+      "#playeroptionsul li.zetaflix_player_option, .zetaflix_player_option",
+    ).toArray();
+
+    let trailerEmbedUrl = "";
+    for (const optEl of playerOptions) {
+      const opt = $(optEl);
+      const post = opt.attr("data-post") || meta.postId || "";
+      const pType =
+        opt.attr("data-type") || (effectiveType === "series" ? "ep" : "mv");
+      const nume = opt.attr("data-nume") || "";
+      const serverLabel =
+        opt.find(".title, .server").text().trim() ||
+        opt.text().replace(/\s+/g, " ").trim() ||
+        `Server ${nume}`;
+
+      if (!post || !nume || nume === "fake") continue;
+
+      try {
+        const body = new URLSearchParams({
+          action: "zeta_player_ajax",
+          post,
+          nume,
+          type: pType,
+        });
+        const ajaxRes = await axios.post(
+          `${baseUrl}/wp-admin/admin-ajax.php`,
+          body.toString(),
+          {
+            signal,
+            headers: {
+              ...defaultHeaders,
+              ...commonHeaders,
+              "Content-Type": "application/x-www-form-urlencoded",
+              Referer: pageUrl,
+            },
+            timeout: 8000,
+          },
+        );
+        const embedData = ajaxRes.data;
+        let embedUrl =
+          typeof embedData === "object" ? embedData?.embed_url || "" : "";
+        if (embedUrl && embedUrl.includes("<iframe")) {
+          const $iframe = cheerio.load(embedUrl);
+          embedUrl = $iframe("iframe").attr("src") || "";
+        }
+        if (!embedUrl || !embedUrl.startsWith("http")) continue;
+
+        if (nume === "trailer" || /youtube\.com|youtu\.be/i.test(embedUrl)) {
+          trailerEmbedUrl = embedUrl;
+          continue;
+        }
+
+        const ext = embedUrl.includes(".m3u8")
+          ? "m3u8"
+          : embedUrl.includes(".mp4")
+            ? "mp4"
+            : embedUrl.includes(".mkv")
+              ? "mkv"
+              : "m3u8";
+        streams.push({
+          server: serverLabel,
+          link: embedUrl,
+          type: ext,
+          quality: "1080",
+          headers: {
+            Referer: pageUrl,
+          },
+        });
+      } catch {}
+    }
+
+    // 2. Check #links / download table if present
+    const dlLinks = $(
+      "#links a[href], .links_table a[href], .download-links a[href]",
+    ).toArray();
+    for (const aEl of dlLinks) {
+      const href = $(aEl).attr("href") || "";
+      if (!href || !href.startsWith("http")) continue;
+      if (/hubcloud|vcloud/i.test(href)) {
+        try {
+          const hc = await hubcloudExtractor(
+            href,
+            signal,
+            axios,
+            cheerio,
+            commonHeaders,
+            providerContext,
+            false,
+            "world4u",
+          );
+          if (Array.isArray(hc)) streams.push(...hc);
+        } catch {}
+      } else if (/gdflix/i.test(href)) {
+        try {
+          const gd = await gdflixExtractor(
+            href,
+            signal,
+            axios,
+            cheerio,
+            commonHeaders,
+            providerContext,
+          );
+          if (Array.isArray(gd)) streams.push(...gd);
+        } catch {}
+      }
+    }
+
+    // 3. Resolve TMDB / IMDb and run multi-stream extractors (Cinejoy, Vidstuck, Movy)
+    let tmdbId = meta.tmdbId || "";
+    let imdbId = meta.imdbId || "";
+    if (!tmdbId && title) {
+      const resolved = await lookupTmdbByTitleAndPoster({
+        title,
+        year,
+        posterFile,
+        type: effectiveType,
+        axios,
+        commonHeaders,
+      });
+      tmdbId = resolved.tmdbId;
+      if (!imdbId) imdbId = resolved.imdbId;
+      if (!year) year = resolved.year;
+    }
+
+    if (tmdbId) {
+      const [cjStreams, vsStreams, mvStreams] = await Promise.all([
+        extractCinejoyStreams({
+          tmdbId,
+          season,
+          episode,
+          type: effectiveType,
+          providerContext,
+          signal,
+        }).catch(() => [] as Stream[]),
+        extractVidstuckStreams({
+          tmdbId,
+          imdbId,
+          title,
+          year,
+          season,
+          episode,
+          type: effectiveType,
+          providerContext,
+          signal,
+        }).catch(() => [] as Stream[]),
+        extractMovyStreams({
+          tmdbId,
+          imdbId,
+          title,
+          year,
+          season,
+          episode,
+          type: effectiveType,
+          providerContext,
+          signal,
+        }).catch(() => [] as Stream[]),
+      ]);
+
+      for (const s of [
+        ...(cjStreams || []),
+        ...(vsStreams || []),
+        ...(mvStreams || []),
+      ]) {
+        if (
+          s?.link &&
+          !s.server.toLowerCase().includes("lisbon") &&
+          !s.link.includes("cheaptruckrepairs") &&
+          !streams.some((existing) => existing.link === s.link)
+        ) {
+          streams.push(s);
+        }
+      }
+    }
+
+    // If no direct streams were found from external CDNs and Zetaflix had a trailer/embed, include it as fallback
+    if (streams.length === 0 && trailerEmbedUrl) {
+      streams.push({
+        server: "World4uFree Official Trailer",
+        link: trailerEmbedUrl,
+        type: "m3u8",
+        quality: "720",
+      });
+    }
+  }
+
+  return streams;
+}
 
 export const getStream = async function ({
-  link: url,
+  link: rawUrl,
   type,
+  signal,
   providerContext,
 }: {
   link: string;
   type: string;
+  signal: AbortSignal;
   providerContext: ProviderContext;
 }): Promise<Stream[]> {
-  const { axios, cheerio } = providerContext;
-  const headers = {
-    "sec-ch-ua":
-      '"Not_A Brand";v="8", "Chromium";v="120", "Microsoft Edge";v="120"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-    Cookie:
-      "61cn=1; 61wk=1; __cf_bm=wtv9Eoa2wrUDgevtAnJ6wUOZrxtVYBcddhUDtT0Wj_M-1757137848-1.0.1.1-8Tr7rV19zNgUcRYe_5567LKb2IZrKyxwrc1VWgTmMDd06Givhil3U2kMtUYTYkTnuD3sHUgfh8CO9Y5LrEcZACBbrPE.3Sq5F_JLXaK7Hrw; conv_tracking_data-2=%7B%22mf_source%22%3A%22regular_download-59%22%2C%22mf_content%22%3A%22Free%22%2C%22mf_medium%22%3A%22unknown%5C%2FDefault%20Browser%22%2C%22mf_campaign%22%3A%22616qpccbrq0y4oe%22%2C%22mf_term%22%3A%22d11b8f533377139aa38d757e5057630e%22%7D; ukey=pu2dyp35fyongstav3km969l8d6u2z82",
-  };
-
+  const { axios, cheerio, commonHeaders: headers } = providerContext;
   try {
+    const { requestUrl, meta } = readW4uMeta(rawUrl);
+    let url = requestUrl;
+
+    // 1. Handle modern World4uFree (world4ufree.co.in Zetaflix) URLs
+    if (
+      /world4ufree\.co\.in/i.test(url) ||
+      /\/(?:movies|tvshows|episodes)\//i.test(url) ||
+      meta.postId ||
+      meta.tmdbId
+    ) {
+      const zetaStreams = await resolveZetaflixStreams({
+        pageUrl: url,
+        meta,
+        type,
+        signal,
+        providerContext,
+      });
+      if (zetaStreams.length > 0) {
+        return zetaStreams;
+      }
+    }
+
+    // 2. Legacy World4u (wlink / fastilinks / photolinx / mediafire) flow
     if (type === "movie") {
       const linkRes = await axios.get(url, { headers });
       const linkData = linkRes.data;
@@ -41,17 +335,10 @@ export const getStream = async function ({
       const fastilinksKey = $$(
         'input[name="_csrf_token_645a83a41868941e4692aa31e7235f2"]',
       ).attr("value");
-      console.log("fastilinksKey", fastilinksKey);
       const fastilinksFormData = new FormData();
       fastilinksFormData.append(
         "_csrf_token_645a83a41868941e4692aa31e7235f2",
         fastilinksKey || "",
-      );
-      console.log(
-        "fastilinksFormData",
-        fastilinksFormData,
-        "fastilinksUrl",
-        url,
       );
       const fastilinksRes2 = await fetch(url, {
         method: "POST",
@@ -64,21 +351,15 @@ export const getStream = async function ({
         );
       }
       const fastilinksHtml = await fastilinksRes2.text();
-      // console.log('fastilinksHtml', fastilinksHtml);
       const $$$ = cheerio.load(fastilinksHtml);
       const fastilinksLink =
         $$$('a:contains("mediafire")').attr("href") ||
         $$$('a:contains("photolinx")').attr("href");
-      console.log("fastilinksLink", fastilinksLink);
       url = fastilinksLink || url;
     }
-    console.log("world4uGetStream", type, url);
 
     if (url.includes("photolinx")) {
-      console.log("photolinx", url);
       const photolinxBaseUrl = url.split("/").slice(0, 3).join("/");
-      console.log("photolinxBaseUrl", photolinxBaseUrl);
-      // const photolinxBaseUrl = url.split('/').slice(0, 3).join('/');
       const photolinxRes = await fetch(
         "https://photolinx.space/download/SzbPKzt6YMO",
         {
@@ -116,7 +397,6 @@ export const getStream = async function ({
           uid,
         },
       };
-      console.log("photolinxData", JSON.stringify(body));
 
       const photolinxRes2 = await fetch(`${photolinxBaseUrl}/action`, {
         headers: {
@@ -142,17 +422,15 @@ export const getStream = async function ({
         method: "POST",
       });
       const photolinxData2 = await photolinxRes2.json();
-      console.log("photolinxData2", photolinxData2);
       const dwUrl = photolinxData2?.download_url;
       if (dwUrl) {
-        const streamLinks = [
+        return [
           {
             server: "Photolinx",
             link: dwUrl,
             type: "mkv",
           },
         ];
-        return streamLinks;
       }
     }
 
@@ -163,15 +441,16 @@ export const getStream = async function ({
     try {
       const key =
         html.match(/formData\.append\('key',\s*'(\d+)'\);/)?.[1] || "";
-      console.log("key", key, "url", url);
-      const formData = new FormData();
-      formData.append("key", key);
-      const streamRes = await fetch(url, {
-        method: "POST",
-        headers: headers,
-        body: formData,
-      });
-      data = await streamRes.json();
+      if (key) {
+        const formData = new FormData();
+        formData.append("key", key);
+        const streamRes = await fetch(url, {
+          method: "POST",
+          headers: headers,
+          body: formData,
+        });
+        data = await streamRes.json();
+      }
     } catch (err) {
       console.log(
         "error in world4uGetStream",
@@ -179,14 +458,11 @@ export const getStream = async function ({
       );
     }
 
-    // console.log('streamRes', streamRes);
-    let $ = cheerio.load(html);
-    // console.log('data', html);
+    const $ = cheerio.load(html);
     const mediafireUrl =
       $('h1:contains("Download")').find("a").attr("href") ||
       $(".input.popsok").attr("href") ||
-      url;
-    console.log("mediafireUrl", mediafireUrl);
+      "";
     if (mediafireUrl) {
       const directUrl = await fetch(mediafireUrl, {
         headers: {
@@ -194,7 +470,6 @@ export const getStream = async function ({
         },
       });
       const urlContentType = directUrl.headers.get("content-type");
-      console.log("mfcontentType", urlContentType);
       if (urlContentType && urlContentType.includes("video")) {
         streamLinks.push({
           server: "Mediafire",
@@ -209,19 +484,11 @@ export const getStream = async function ({
           },
         });
         const repairHtml = await repairRes.text();
-
-        // Regex to match the window.location.href assignment in the script content
         const base64Link = cheerio
           .load(repairHtml)(".input.popsok")
           .attr("data-scrambled-url");
-        console.log("base64Link", base64Link);
         const href = base64Link ? atob(base64Link) : null;
-        console.log("href", href);
-
-        // If a match is found, return the URL; otherwise return null
-        let downloadLInk = href?.startsWith("https://") ? href : null;
-        console.log("downloadLInk", downloadLInk);
-
+        const downloadLInk = href?.startsWith("https://") ? href : null;
         if (downloadLInk) {
           streamLinks.push({
             server: "Mediafire",
@@ -233,38 +500,39 @@ export const getStream = async function ({
       }
     }
 
-    const requireRepairRes = await fetch(data.download);
-    const contentType = requireRepairRes.headers.get("content-type");
-    console.log("contentType", contentType);
-    if (contentType && contentType.includes("video")) {
-      streamLinks.push({
-        server: "Mediafire",
-        link: data.download,
-        type: "mkv",
-      });
-      return streamLinks;
-    } else {
-      const repairRes = await fetch(data.download, {
-        headers: {
-          Referer: url,
-        },
-      });
-      const repairHtml = await repairRes.text();
-      const $ = cheerio.load(repairHtml);
-      const repairLink = $("#continue-btn").attr("href");
-      console.log("repairLink", "https://www.mediafire.com" + repairLink);
-      const repairRequireRepairRes = await fetch(
-        "https://www.mediafire.com" + repairLink,
-      );
-      const $$ = cheerio.load(await repairRequireRepairRes.text());
-      const repairDownloadLink = $$(".input.popsok").attr("href");
-      console.log("repairDownloadLink", repairDownloadLink);
-      if (repairDownloadLink) {
+    if (data.download) {
+      const requireRepairRes = await fetch(data.download);
+      const contentType = requireRepairRes.headers.get("content-type");
+      if (contentType && contentType.includes("video")) {
         streamLinks.push({
           server: "Mediafire",
-          link: repairDownloadLink,
+          link: data.download,
           type: "mkv",
         });
+        return streamLinks;
+      } else {
+        const repairRes = await fetch(data.download, {
+          headers: {
+            Referer: url,
+          },
+        });
+        const repairHtml = await repairRes.text();
+        const $r = cheerio.load(repairHtml);
+        const repairLink = $r("#continue-btn").attr("href");
+        if (repairLink) {
+          const repairRequireRepairRes = await fetch(
+            "https://www.mediafire.com" + repairLink,
+          );
+          const $$ = cheerio.load(await repairRequireRepairRes.text());
+          const repairDownloadLink = $$(".input.popsok").attr("href");
+          if (repairDownloadLink) {
+            streamLinks.push({
+              server: "Mediafire",
+              link: repairDownloadLink,
+              type: "mkv",
+            });
+          }
+        }
       }
     }
 

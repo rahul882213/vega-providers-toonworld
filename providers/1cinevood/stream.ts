@@ -1,6 +1,106 @@
 import { ProviderContext, Stream } from "../types";
 import { hubcloudExtractor } from "../extractors/hubcloud";
+import { gdflixExtractor } from "../extractors/gdflix";
+import { vegadriveExtractor } from "../extractors/vegadrive";
+import { extractCinejoyStreams } from "../extractors/cinejoy";
+import { extractMovyStreams } from "../extractors/movy";
+import { extractVidstuckStreams } from "../extractors/vidstuck";
+import { getCinemetaMeta } from "../getCinemetaMeta";
 import { throwProviderError } from "../providerErrors";
+import { getWithWAF } from "./helper";
+
+interface ParsedStreamMeta {
+  imdbId?: string;
+  season?: number;
+  episode?: number;
+  title?: string;
+  type?: string;
+}
+
+function parseStreamMeta(rawLink: string): {
+  cleanLink: string;
+  meta: ParsedStreamMeta;
+} {
+  try {
+    const parsed = new URL(rawLink);
+    const params = new URLSearchParams(parsed.hash.replace(/^#/, ""));
+    const encoded = params.get("cinemetaMeta");
+    parsed.hash = "";
+    if (encoded) {
+      const meta = JSON.parse(decodeURIComponent(encoded)) as ParsedStreamMeta;
+      return { cleanLink: parsed.href, meta: meta || {} };
+    }
+    return { cleanLink: parsed.href, meta: {} };
+  } catch {
+    return { cleanLink: rawLink.split("#")[0], meta: {} };
+  }
+}
+
+async function resolveFallbackMultiStreams({
+  meta,
+  type,
+  providerContext,
+  signal,
+}: {
+  meta: ParsedStreamMeta;
+  type: string;
+  providerContext: ProviderContext;
+  signal: AbortSignal;
+}): Promise<Stream[]> {
+  if (!meta.imdbId) return [];
+  try {
+    const effectiveType = meta.type || type || "movie";
+    const cinemeta = await getCinemetaMeta(
+      meta.imdbId,
+      effectiveType,
+      providerContext,
+    );
+    const tmdbId = cinemeta?.moviedb_id ? String(cinemeta.moviedb_id) : "";
+    const title = meta.title || cinemeta?.name || "";
+    const year = cinemeta?.year ? String(cinemeta.year).slice(0, 4) : "";
+    const season = Number(meta.season || 1);
+    const episode = Number(meta.episode || 1);
+
+    if (!tmdbId) return [];
+
+    const [cj, mv, vs] = await Promise.all([
+      extractCinejoyStreams({
+        tmdbId,
+        season,
+        episode,
+        type: effectiveType,
+        providerContext,
+        signal,
+      }).catch(() => [] as Stream[]),
+      extractMovyStreams({
+        tmdbId,
+        imdbId: meta.imdbId,
+        title,
+        year,
+        season,
+        episode,
+        type: effectiveType,
+        providerContext,
+        signal,
+      }).catch(() => [] as Stream[]),
+      extractVidstuckStreams({
+        tmdbId,
+        imdbId: meta.imdbId,
+        title,
+        year,
+        season,
+        episode,
+        type: effectiveType,
+        providerContext,
+        signal,
+      }).catch(() => [] as Stream[]),
+    ]);
+
+    return [...(cj || []), ...(vs || []), ...(mv || [])];
+  } catch {
+    return [];
+  }
+}
 
 export async function getStream({
   link,
@@ -15,14 +115,18 @@ export async function getStream({
   providerContext: ProviderContext;
   isDownload?: boolean;
 }) {
-  const { axios, cheerio, commonHeaders } = providerContext;
+  const { axios, cheerio, commonHeaders, openWebView } = providerContext;
+  const { cleanLink, meta } = parseStreamMeta(link);
+  let processLink = cleanLink;
+  const streamLinks: Stream[] = [];
+
   try {
-    let processLink = link;
     if (processLink.includes("oxxfile")) {
       try {
         const urlObj = new URL(processLink);
         const id = processLink.split("/").filter(Boolean).pop();
         const apiUrl = `${urlObj.origin}/api/s/${id}/hubcloud`;
+
         try {
           const apiRes = await axios.get(apiUrl, {
             headers: commonHeaders,
@@ -53,9 +157,145 @@ export async function getStream({
       } catch (e) {
         console.log("Error resolving oxxfile link", e);
       }
+    } else if (
+      !/hubcloud|vcloud|gdflix/i.test(processLink) &&
+      /mobilejsr|genxfm|nexdrive|dotlink/i.test(processLink)
+    ) {
+      try {
+        const dotlinkRes = await getWithWAF(
+          processLink,
+          axios,
+          openWebView,
+          commonHeaders,
+        );
+        const dotlinkText =
+          typeof dotlinkRes?.data === "string" ? dotlinkRes.data : "";
+        if (dotlinkText) {
+          const $ = cheerio.load(dotlinkText);
+
+          // 1. G-Direct / Instant / FastDL
+          const gDirectLink = $(
+            "a:contains('G-Direct'), a:contains('Instant'), a[href*='fastdl']",
+          )
+            .first()
+            .attr("href");
+          if (gDirectLink) {
+            try {
+              const fastdlRes = await axios.get(gDirectLink, {
+                headers: { ...commonHeaders, Referer: processLink },
+                signal,
+                timeout: 10000,
+              });
+              const m = String(fastdlRes.data || "").match(
+                /reurl\s*=\s*["']([^"']+)["']/,
+              );
+              if (m?.[1]) {
+                const targetUrl = m[1].includes("link=")
+                  ? decodeURIComponent(m[1].split("link=")[1])
+                  : m[1];
+                if (targetUrl.startsWith("http")) {
+                  streamLinks.push({
+                    server: "Instant (Google CDN)",
+                    link: targetUrl,
+                    type: "mkv",
+                  });
+                }
+              }
+            } catch (e: any) {
+              console.log("1CineVood FastDL error:", e?.message);
+            }
+          }
+
+          // 2. VegaDrive
+          const vdHref = $("a:contains('Vega Drive'), a[href*='vegadrive']")
+            .first()
+            .attr("href");
+          if (vdHref) {
+            try {
+              const vdStreams = await vegadriveExtractor(
+                vdHref,
+                axios,
+                providerContext,
+              );
+              if (Array.isArray(vdStreams)) {
+                streamLinks.push(...vdStreams);
+              }
+            } catch (e: any) {
+              console.log("1CineVood VegaDrive error:", e?.message);
+            }
+          }
+
+          // 3. V-Cloud / M-Cloud / HubCloud
+          const vcloudHref =
+            $(
+              "a:contains('V-Cloud'), a:contains('M-Cloud'), a[href*='vcloud'], a[href*='hubcloud']",
+            )
+              .first()
+              .attr("href") ||
+            dotlinkText.match(/<a\s+href="([^"]*cloud\.[^"]*)"/i)?.[1];
+          if (vcloudHref) {
+            processLink = vcloudHref;
+          } else {
+            const gdHref = $("a[href*='gdflix']").first().attr("href");
+            if (gdHref) {
+              processLink = gdHref;
+            }
+          }
+        }
+      } catch (e) {
+        console.log("Error resolving intermediate Cinewood locker link", e);
+      }
     }
 
-    const hubcloudLink = await hubcloudExtractor(
+    if (processLink.includes("gdflix")) {
+      const gdStreams = await gdflixExtractor(
+        processLink,
+        signal,
+        axios,
+        cheerio,
+        commonHeaders,
+        providerContext,
+      );
+      if (Array.isArray(gdStreams) && gdStreams.length > 0) {
+        streamLinks.push(...gdStreams);
+      }
+      if (streamLinks.length > 0) return streamLinks;
+    }
+
+    if (
+      /hubcloud|vcloud|oxxfile/i.test(processLink) ||
+      !/mobilejsr|genxfm/i.test(processLink)
+    ) {
+      const hubcloudLink = await hubcloudExtractor(
+        processLink,
+        signal,
+        axios,
+        cheerio,
+        commonHeaders,
+        providerContext,
+        isDownload,
+        "1cinevood",
+      );
+      if (Array.isArray(hubcloudLink) && hubcloudLink.length > 0) {
+        streamLinks.push(...hubcloudLink);
+      }
+    }
+
+    if (streamLinks.length > 0) {
+      return streamLinks;
+    }
+
+    const fallbackStreams = await resolveFallbackMultiStreams({
+      meta,
+      type,
+      providerContext,
+      signal,
+    });
+    if (fallbackStreams.length > 0) {
+      return fallbackStreams;
+    }
+
+    return await hubcloudExtractor(
       processLink,
       signal,
       axios,
@@ -65,9 +305,16 @@ export async function getStream({
       isDownload,
       "1cinevood",
     );
-
-    return hubcloudLink;
   } catch (error: any) {
+    const fallbackStreams = await resolveFallbackMultiStreams({
+      meta,
+      type,
+      providerContext,
+      signal,
+    });
+    if (fallbackStreams.length > 0) {
+      return fallbackStreams;
+    }
     throwProviderError("1CineVood", "stream", error);
   }
 }

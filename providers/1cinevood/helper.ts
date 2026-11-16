@@ -1,29 +1,31 @@
 import { getBaseUrl } from "../getBaseUrl";
 
+const DEFAULT_CINEWOOD_BASE_URL = "https://one.1cinevood.baby";
 let resolvedBaseUrl = "";
+
+const wafSessionCache = new Map<
+  string,
+  { cookies?: string; userAgent?: string }
+>();
 
 export async function getCinewoodBaseUrl(): Promise<string> {
   if (resolvedBaseUrl) return resolvedBaseUrl;
+
   try {
-    let url = await getBaseUrl("1cinevood");
-    if (!url || url.includes("cinevood.rocks")) {
-      try {
-        const res = await fetch(url || "https://cinevood.rocks", {
-          method: "HEAD",
-          redirect: "follow",
-        });
-        if (res.url) {
-          resolvedBaseUrl = new URL(res.url).origin;
-          return resolvedBaseUrl;
-        }
-      } catch {}
-      resolvedBaseUrl = "https://new1.cinevood.cv";
+    const url = await getBaseUrl("1cinevood");
+    if (
+      !url ||
+      /(?:cinevood\.rocks|cinevood\.business|cinewood\.business|cinevood\.cv)/i.test(
+        url,
+      )
+    ) {
+      resolvedBaseUrl = DEFAULT_CINEWOOD_BASE_URL;
       return resolvedBaseUrl;
     }
     resolvedBaseUrl = url.replace(/\/+$/, "");
     return resolvedBaseUrl;
   } catch {
-    return "https://new1.cinevood.cv";
+    return DEFAULT_CINEWOOD_BASE_URL;
   }
 }
 
@@ -46,35 +48,73 @@ export async function getWithWAF(
   headers: any,
 ): Promise<any> {
   const baseUrl = url.split("/").slice(0, 3).join("/");
+  const cachedSession = wafSessionCache.get(baseUrl);
+  const reqHeaders: Record<string, string> = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    Accept:
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    ...headers,
+    Referer: `${baseUrl}/`,
+  };
+  if (cachedSession?.userAgent) {
+    reqHeaders["User-Agent"] = cachedSession.userAgent;
+  }
+  if (cachedSession?.cookies) {
+    reqHeaders["Cookie"] = cachedSession.cookies;
+  }
+
   try {
-    return await axios.get(url, { headers: { ...headers, Referer: baseUrl } });
+    const res = await axios.get(url, { headers: reqHeaders });
+    if (
+      typeof res?.data === "string" &&
+      isWafChallenge(res.data) &&
+      openWebView
+    ) {
+      throw { response: { status: 403 } };
+    }
+    return res;
   } catch (error: any) {
-    if (error.response?.status === 403 && openWebView) {
-      console.log(`WAF detected (403) for ${url}, using solver...`);
+    if (
+      (error.response?.status === 403 || error.response?.status === 503) &&
+      openWebView
+    ) {
+      console.log(
+        `WAF detected (${error.response?.status}) for ${url}, using solver...`,
+      );
       const wafResult = await openWebView(url, {
         title: "Solve the captcha below and click done",
         description: "Required to bypass anti-bot protection.",
-        headers: { ...headers, Referer: baseUrl },
+        headers: { ...reqHeaders, Referer: baseUrl },
         waitForCookie: "cf_clearance",
         force: true,
       });
 
+      const solvedCookies = wafResult?.cookies || wafResult?.cookie;
+      const solvedUa = wafResult?.userAgent || reqHeaders["User-Agent"];
+      if (solvedCookies || solvedUa) {
+        wafSessionCache.set(baseUrl, {
+          cookies: solvedCookies,
+          userAgent: solvedUa,
+        });
+      }
+
       if (
-        wafResult.data &&
+        wafResult?.data &&
         !isWafChallenge(wafResult.data) &&
         wafResult.data.trim().length > 50
       ) {
-        return { data: wafResult.data };
+        return { data: wafResult.data, url: wafResult.url || url };
       }
 
-      const targetUrl = wafResult.url || url;
+      const targetUrl = wafResult?.url || url;
       const targetBaseUrl = targetUrl.split("/").slice(0, 3).join("/");
       return await axios.get(targetUrl, {
         headers: {
-          ...headers,
+          ...reqHeaders,
           Referer: targetBaseUrl,
-          "User-Agent": wafResult.userAgent || headers["User-Agent"],
-          Cookie: wafResult.cookies || wafResult.cookie,
+          "User-Agent": solvedUa,
+          ...(solvedCookies ? { Cookie: solvedCookies } : {}),
         },
       });
     }

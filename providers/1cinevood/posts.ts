@@ -43,7 +43,6 @@ async function fetchPosts({
   filter,
   query,
   page = 1,
-  signal,
   providerContext,
 }: {
   filter?: string;
@@ -53,22 +52,23 @@ async function fetchPosts({
   providerContext: ProviderContext;
 }): Promise<Post[]> {
   try {
-    const baseUrl = await getCinewoodBaseUrl();
+    const baseUrl = (await getCinewoodBaseUrl()).replace(/\/+$/, "");
     let url: string;
 
-    // --- Build URL for category filter or search query
     if (query && query.trim()) {
-      url = `${baseUrl}/?s=${encodeURIComponent(query)}${
-        page > 1 ? `&paged=${page}` : ""
-      }`;
-    } else if (filter) {
-      url = filter.startsWith("/")
-        ? `${baseUrl}${filter.replace(/\/$/, "")}${
-            page > 1 ? `/page/${page}` : ""
-          }`
-        : `${baseUrl}/${filter}${page > 1 ? `/page/${page}` : ""}`;
+      const encodedQuery = encodeURIComponent(query.trim());
+      url =
+        page > 1
+          ? `${baseUrl}/page/${page}/?s=${encodedQuery}`
+          : `${baseUrl}/?s=${encodedQuery}`;
+    } else if (filter && filter.trim()) {
+      const cleanFilter = filter.trim().replace(/^\/+|\/+$/g, "");
+      url =
+        page > 1
+          ? `${baseUrl}/${cleanFilter}/page/${page}/`
+          : `${baseUrl}/${cleanFilter}/`;
     } else {
-      url = `${baseUrl}${page > 1 ? `/page/${page}` : ""}`;
+      url = page > 1 ? `${baseUrl}/page/${page}/` : `${baseUrl}/`;
     }
 
     const { axios, cheerio, commonHeaders, openWebView } = providerContext;
@@ -81,10 +81,10 @@ async function fetchPosts({
     const seen = new Set<string>();
     const catalog: Post[] = [];
 
-    // --- HDMovie2 selectors
     const POST_SELECTORS = [
-      ".pstr_box",
+      "article.latestPost",
       "article",
+      ".pstr_box",
       ".result-item",
       ".post",
       ".item",
@@ -95,21 +95,51 @@ async function fetchPosts({
 
     $(POST_SELECTORS).each((_, el) => {
       const card = $(el);
-      let link = card.find("a[href]").first().attr("href") || "";
+      let link =
+        card
+          .find("h1.entry-title a[href], h2.entry-title a[href], h2 a[href]")
+          .first()
+          .attr("href") ||
+        card.find("a#featured-thumbnail[href], a[href]").first().attr("href") ||
+        "";
       if (!link) return;
+
       const postUrl = new URL(link, url);
       link = `${postUrl.pathname}${postUrl.search}${postUrl.hash}`;
-      if (seen.has(link)) return;
+      if (
+        !link ||
+        link === "/" ||
+        /^\/(?:category|tag|page|author|contect-us|dmca|request-a-movies|how-to-download)\b/i.test(
+          link,
+        ) ||
+        seen.has(link)
+      ) {
+        return;
+      }
 
-      let title =
-        card.find("h2").first().text().trim() ||
+      const rawTitle =
+        card
+          .find("h1.entry-title, h2.entry-title, h2, h3")
+          .first()
+          .text()
+          .trim() ||
         card.find("a[title]").first().attr("title")?.trim() ||
+        card.find("img[alt]").first().attr("alt")?.trim() ||
         card.text().trim();
-      title = title
+
+      let title = rawTitle
+        .replace(/^Download\s+/i, "")
         .replace(/\[.*?\]/g, "")
-        .replace(/\(.+?\)/g, "")
+        .replace(/\{.*?\}/g, "")
         .replace(/\s{2,}/g, " ")
         .trim();
+
+      const yearTitleMatch = title.match(/^(.+?\(\d{4}\))/);
+      if (yearTitleMatch) {
+        title = yearTitleMatch[1].trim();
+      } else {
+        title = title.replace(/\s*\|.*$/, "").trim();
+      }
       if (!title) return;
 
       const img =

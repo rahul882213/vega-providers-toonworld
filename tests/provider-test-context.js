@@ -10,7 +10,7 @@ const nativeFetch = global.fetch;
 
 global.fetch = async (input, init) => {
   const url = typeof input === "string" ? input : input.url;
-  if (url === urlsEndpoint) {
+  if (url === urlsEndpoint || (typeof url === "string" && url.endsWith("/urls.json"))) {
     const providerUrls = fs.readFileSync(
       path.join(rootDir, "urls.json"),
       "utf-8",
