@@ -191,6 +191,18 @@
     "name": "AsianC",
     "url": "https://asianc.id"
   },
+  "RareAnimes": {
+    "name": "RareAnimes",
+    "url": "https://www.rareanimes.foo"
+  },
+  "durbinLive": {
+    "name": "DurbinLive",
+    "url": "https://durbinlive.live"
+  },
+  "liveTgTv": {
+    "name": "LiveTG TV",
+    "url": "https://livetgtv.lovable.app"
+  },
   "bollyflix": {
     "name": "BollyFlix",
     "url": "https://new1.bollyflix.tours"

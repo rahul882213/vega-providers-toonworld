@@ -1,3 +1,4 @@
+import { formatSeasonLinks } from "../formatSeasonLinks";
 import { getBaseUrl } from "../getBaseUrl";
 import { Info, Link, ProviderContext } from "../types";
 
@@ -63,7 +64,7 @@ export async function getMeta({
 }): Promise<Info> {
   const baseUrl = await getBaseUrl(providerValue);
   const url = new URL(link, `${baseUrl}/`).href;
-  const response = await providerContext.axios.get(url);
+  const response = await providerContext.axios.get(url, { headers: providerContext.commonHeaders });
   const $ = providerContext.cheerio.load(response.data || "");
   const title = getTitle($);
   const image = getBackdrop($);
@@ -72,7 +73,7 @@ export async function getMeta({
     .text()
     .replace(/\s+/g, " ")
     .trim();
-  const type = $(".meta-pills").text().includes("Series") ? "series" : "movie";
+  const type = /series/i.test($(".meta-pills").text()) || /\bSeason\s*\d+\b/i.test(title) ? "series" : "movie";
 
   const quickDownload = await providerContext.kvStore?.get<boolean>("eonMovies_quickDownload");
 
@@ -84,7 +85,7 @@ export async function getMeta({
     type,
     quickDownload: quickDownload ?? true,
     tags: getTags($),
-    linkList: getDownloadLinks($, baseUrl),
+    linkList: formatSeasonLinks(getDownloadLinks($, baseUrl)),
     webUrl: url,
   };
 }
