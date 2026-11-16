@@ -147,7 +147,7 @@ async function fetchSourcesForSlug(
     { slug },
   ];
 
-  const apiRes = await promiseAny(
+  const apiRes: any = await promiseAny(
     payloads.map((p) =>
       axios
         .post(apiUrl, p, {

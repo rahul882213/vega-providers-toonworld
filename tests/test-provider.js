@@ -386,11 +386,11 @@ async function main() {
     console.log("\nUsage:");
     console.log("  npm run test:provider -- <provider> <function> [--rebuild]");
     console.log("\nExamples:");
-    console.log("  npm run test:provider -- mod getPosts");
-    console.log("  npm run test:provider -- mod getSearchPosts --rebuild");
-    console.log("  npm run test:provider -- uhd getMeta");
-    console.log("  npm run test:provider -- primeMirror getEpisodes");
-    console.log("  npm run test:provider -- luxMovies getStream");
+    console.log("  npm run test:provider -- toonworld4all getPosts");
+    console.log("  npm run test:provider -- bollyflix getSearchPosts --rebuild");
+    console.log("  npm run test:provider -- 1cinevood getMeta");
+    console.log("  npm run test:provider -- world4u getEpisodes");
+    console.log("  npm run test:provider -- bollyflix getStream");
     console.log("\nAvailable functions:");
     console.log("  - getPosts       (get posts by filter/category)");
     console.log("  - getSearchPosts (search for posts)");

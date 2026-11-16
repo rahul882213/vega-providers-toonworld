@@ -142,4 +142,4 @@ export const providerContext: ProviderContext = {
   Aes: null,
   commonHeaders: headers,
   cheerio,
-};
+} as any;

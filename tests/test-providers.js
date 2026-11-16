@@ -694,11 +694,11 @@ Default behavior:
 
 Examples:
   npm test                                  # Test all providers
-  npm test -- youtube                       # Test youtube provider
-  npm test -- youtube --download            # Test youtube in download mode (triggers Cobalt MP4)
-  npm test -- hdhub4u --first               # Always test first post (e.g. pinned/latest)
-  npm test -- hdhub4u --index=2             # Test 3rd post
-  npm test -- kickAssAnime                  # Test kickAssAnime
+  npm test -- toonworld4all                       # Test toonworld4all provider
+  npm test -- toonworld4all --download            # Test toonworld4all in download mode (triggers Cobalt MP4)
+  npm test -- bollyflix --first               # Always test first post (e.g. pinned/latest)
+  npm test -- bollyflix --index=2             # Test 3rd post
+  npm test -- world4u                  # Test world4u
     `);
     return;
   }

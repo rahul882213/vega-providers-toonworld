@@ -274,6 +274,7 @@ export type SettingsField =
 
 export type ProviderContext = {
   axios: AxiosStatic;
+  Aes?: any;
   commonHeaders: Record<string, string>;
   cheerio: typeof cheerio;
   openWebView: (

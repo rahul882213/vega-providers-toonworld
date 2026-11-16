@@ -233,6 +233,6 @@ export async function gdflixExtractor(
 
     return streamLinks;
   } catch (error) {
-    return streamLinks;
+    return [];
   }
 }
